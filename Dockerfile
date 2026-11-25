@@ -4,7 +4,9 @@ WORKDIR /src
 COPY go.mod ./
 COPY . .
 
-RUN go mod tidy && \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod tidy && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /observer ./cmd/observer
 
 FROM alpine:3.21

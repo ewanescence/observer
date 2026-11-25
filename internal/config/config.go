@@ -40,7 +40,7 @@ func Load() (Config, error) {
 		ListenAddr:             envString("OBSERVER_LISTEN_ADDR", ":8080"),
 		DBPath:                 envString("OBSERVER_DB_PATH", "/data/observer.db"),
 		TrustForwardAuth:           envBool("OBSERVER_TRUST_FORWARD_AUTH", true),
-		AutenticoAppID:             envString("OBSERVER_AUTENTICO_APP_ID", envString("OBSERVED_AUTENTICO_APP_ID", "")),
+		AutenticoAppID:             envString("OBSERVER_AUTENTICO_APP_ID", ""),
 		AutenticoURL:               envString("OBSERVER_AUTENTICO_URL", ""),
 		AutenticoAPIURL:            envString("OBSERVER_AUTENTICO_API_URL", ""),
 		AutenticoAdminClientID:     envString("OBSERVER_AUTENTICO_ADMIN_CLIENT_ID", "autentico-admin"),

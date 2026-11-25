@@ -113,7 +113,7 @@ func (s *Server) resolveActor(r *http.Request) (string, string, string) {
 
 	ctx := r.Context()
 	cached, err := s.store.GetUser(ctx, uid)
-	needsSync := err != nil || cached.DisplayName == "" || strings.Contains(cached.DisplayName, " (") || cached.SyncedAt.IsZero() || time.Since(cached.SyncedAt) > 15*time.Minute
+	needsSync := err != nil || cached.DisplayName == "" || cached.SyncedAt.IsZero() || time.Since(cached.SyncedAt) > 15*time.Minute
 
 	if s.autenticoClient.Enabled() && needsSync {
 		lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -289,11 +289,7 @@ func (s *Server) handleCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	created, err := s.store.CreateEndpoint(r.Context(), ep)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			writeJSONError(w, http.StatusConflict, "an endpoint with this slug already exists")
-			return
-		}
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeEndpointMutationError(w, err)
 		return
 	}
 
@@ -305,9 +301,8 @@ func (s *Server) handleCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateEndpoint(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid endpoint id")
+	id, ok := parsePathID(w, r, "endpoint")
+	if !ok {
 		return
 	}
 
@@ -342,15 +337,7 @@ func (s *Server) handleUpdateEndpoint(w http.ResponseWriter, r *http.Request) {
 		StoreRawOnError:        req.StoreRawOnError,
 	})
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			writeJSONError(w, http.StatusNotFound, "endpoint not found")
-			return
-		}
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			writeJSONError(w, http.StatusConflict, "an endpoint with this slug already exists")
-			return
-		}
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		writeEndpointMutationError(w, err)
 		return
 	}
 
@@ -362,9 +349,8 @@ func (s *Server) handleUpdateEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteEndpoint(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid endpoint id")
+	id, ok := parsePathID(w, r, "endpoint")
+	if !ok {
 		return
 	}
 	existing, err := s.store.GetEndpointByID(r.Context(), id)
@@ -421,9 +407,8 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid event id")
+	id, ok := parsePathID(w, r, "event")
+	if !ok {
 		return
 	}
 	ev, err := s.store.GetEvent(r.Context(), id)
@@ -439,9 +424,8 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid event id")
+	id, ok := parsePathID(w, r, "event")
+	if !ok {
 		return
 	}
 	existing, err := s.store.GetEvent(r.Context(), id)
@@ -561,6 +545,27 @@ func (s *Server) handleGeneratePGP(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("bits=%d, validDays=%d, fingerprint=%s", req.Bits, req.ValidDays, generated.Fingerprint))
 
 	writeJSON(w, http.StatusOK, generated)
+}
+
+func parsePathID(w http.ResponseWriter, r *http.Request, label string) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid "+label+" id")
+		return 0, false
+	}
+	return id, true
+}
+
+func writeEndpointMutationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, db.ErrNotFound) {
+		writeJSONError(w, http.StatusNotFound, "endpoint not found")
+		return
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "unique") {
+		writeJSONError(w, http.StatusConflict, "an endpoint with this slug already exists")
+		return
+	}
+	writeJSONError(w, http.StatusInternalServerError, err.Error())
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {

@@ -74,7 +74,13 @@ func New(cfg config.Config, store *db.Store, ret *retention.Worker) *Server {
 	adminMux.HandleFunc("POST /api/pgp/generate", s.handleGeneratePGP)
 
 	subFS, _ := fs.Sub(ui.Assets, ".")
-	adminMux.Handle("/", http.FileServer(http.FS(subFS)))
+	fileServer := http.FileServer(http.FS(subFS))
+	adminMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		fileServer.ServeHTTP(w, r)
+	}))
 
 	rootMux.Handle("/", s.withForwardAuth(adminMux))
 	s.handler = rootMux

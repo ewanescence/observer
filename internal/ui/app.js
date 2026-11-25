@@ -73,15 +73,20 @@
       .slice(0, 64);
   }
 
+  function activateTab(target) {
+    document.querySelectorAll('.tab').forEach((b) => {
+      b.classList.toggle('active', b.dataset.tab === target);
+    });
+    ['events', 'endpoints', 'audit', 'settings'].forEach((name) => {
+      $(`tab-${name}`).hidden = name !== target;
+    });
+  }
+
   // Tabs
   document.querySelectorAll('.tab').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
       const target = btn.dataset.tab;
-      ['events', 'endpoints', 'audit', 'settings'].forEach((name) => {
-        $(`tab-${name}`).hidden = name !== target;
-      });
+      activateTab(target);
       if (target === 'events') loadSummary().then(loadEvents);
       if (target === 'endpoints') loadSummary();
       if (target === 'audit') loadAudit();
@@ -442,12 +447,7 @@
   }
 
   function jumpToEventsScope(portal, env) {
-    document.querySelectorAll('.tab').forEach((b) => {
-      b.classList.toggle('active', b.dataset.tab === 'events');
-    });
-    ['events', 'endpoints', 'audit', 'settings'].forEach((name) => {
-      $(`tab-${name}`).hidden = name !== 'events';
-    });
+    activateTab('events');
     $('filter-portal').value = portal || '';
     syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
     $('filter-env').value = env || '';

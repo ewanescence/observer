@@ -268,6 +268,7 @@ CREATE TABLE IF NOT EXISTS webhook_events (
 CREATE INDEX IF NOT EXISTS idx_events_received_at ON webhook_events(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_endpoint_received ON webhook_events(endpoint_id, received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_kind_received ON webhook_events(kind, received_at);
+CREATE INDEX IF NOT EXISTS idx_events_endpoint_kind_received ON webhook_events(endpoint_id, kind, received_at);
 
 CREATE TABLE IF NOT EXISTS settings (
 	key TEXT PRIMARY KEY,
@@ -287,6 +288,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_occurred_at ON audit_logs(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action_occurred ON audit_logs(action, occurred_at DESC);
 
 CREATE TABLE IF NOT EXISTS users (
 	user_id TEXT PRIMARY KEY,
@@ -351,13 +353,22 @@ func (s *Store) tableColumns(ctx context.Context, table string) (map[string]bool
 	return cols, rows.Err()
 }
 
+const (
+	endpointSelectCols = `id, portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
+		       custom_headers_json, pgp_private_key_enc, pgp_passphrase_enc,
+		       retention_days, heartbeat_retention_days, store_raw_on_error,
+		       created_at, updated_at`
+	eventSelectCols = `e.id, e.endpoint_id, ep.portal, ep.environment, ep.name, ep.slug,
+		       e.received_at, e.kind, e.status_code,
+		       e.error_message, e.subscription_id, e.session_id, e.attempt_number, e.record_count,
+		       e.event_cases, e.was_encrypted, e.was_compressed, e.pgp_key_name,
+		       e.headers_json, e.payload_json, e.raw_size_bytes, e.decoded_size_bytes`
+)
+
 // ListEndpoints returns all endpoints ordered by Portal > Environment > Name with masked secrets.
 func (s *Store) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
-		       custom_headers_json, pgp_private_key_enc, pgp_passphrase_enc,
-		       retention_days, heartbeat_retention_days, store_raw_on_error,
-		       created_at, updated_at
+		SELECT `+endpointSelectCols+`
 		FROM endpoints
 		ORDER BY lower(portal) ASC, lower(environment) ASC, lower(name) ASC, id ASC
 	`)
@@ -423,27 +434,7 @@ func (s *Store) GetPortalHierarchy(ctx context.Context) ([]PortalSummary, error)
 			return nil, err
 		}
 
-		es.Enabled = enabledInt != 0
-		es.HMACRequired = hmacReqInt != 0
-		es.StoreRawOnError = storeRawInt != 0
-		es.HasAPIKey = apiEnc != ""
-		es.HasHMACSecret = hmacEnc != ""
-		es.HasPGPPrivateKey = pgpKeyEnc != ""
-		es.HasPGPPassphrase = pgpPassEnc != ""
-		es.CustomHeaders = make(map[string]string)
-		if headersJSON != "" {
-			_ = json.Unmarshal([]byte(headersJSON), &es.CustomHeaders)
-		}
-		if retDays.Valid {
-			v := int(retDays.Int64)
-			es.RetentionDays = &v
-		}
-		if hbRetDays.Valid {
-			v := int(hbRetDays.Int64)
-			es.HeartbeatRetentionDays = &v
-		}
-		es.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdStr)
-		es.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedStr)
+		hydrateEndpoint(&es.Endpoint, enabledInt, hmacReqInt, storeRawInt, apiEnc, hmacEnc, headersJSON, pgpKeyEnc, pgpPassEnc, retDays, hbRetDays, createdStr, updatedStr)
 		if lastRecv.Valid && lastRecv.String != "" {
 			if t, err := time.Parse(time.RFC3339Nano, lastRecv.String); err == nil {
 				es.LastReceivedAt = &t
@@ -504,60 +495,26 @@ func newerTime(a, b *time.Time) *time.Time {
 
 // GetEndpointBySlug returns an endpoint with decrypted secrets for webhook ingestion.
 func (s *Store) GetEndpointBySlug(ctx context.Context, slug string) (Endpoint, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
-		       custom_headers_json, pgp_private_key_enc, pgp_passphrase_enc,
-		       retention_days, heartbeat_retention_days, store_raw_on_error,
-		       created_at, updated_at
-		FROM endpoints
-		WHERE slug = ?
-	`, slug)
+	row := s.db.QueryRowContext(ctx, `SELECT `+endpointSelectCols+` FROM endpoints WHERE slug = ?`, slug)
 	return s.scanEndpointDecrypted(row)
 }
 
 // GetEndpointByID returns an endpoint with decrypted secrets for internal operations.
 func (s *Store) GetEndpointByID(ctx context.Context, id int64) (Endpoint, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
-		       custom_headers_json, pgp_private_key_enc, pgp_passphrase_enc,
-		       retention_days, heartbeat_retention_days, store_raw_on_error,
-		       created_at, updated_at
-		FROM endpoints
-		WHERE id = ?
-	`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+endpointSelectCols+` FROM endpoints WHERE id = ?`, id)
 	return s.scanEndpointDecrypted(row)
 }
 
 // CreateEndpoint persists a new endpoint configuration.
 func (s *Store) CreateEndpoint(ctx context.Context, ep Endpoint) (Endpoint, error) {
-	if strings.TrimSpace(ep.Portal) == "" {
-		ep.Portal = "Default"
-	}
-	if strings.TrimSpace(ep.Environment) == "" {
-		ep.Environment = "Production"
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	apiKeyEnc, err := s.box.Seal(ep.APIKey)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	hmacEnc, err := s.box.Seal(ep.HMACSecret)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	pgpKeyEnc, err := s.box.Seal(ep.PGPPrivateKey)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	pgpPassEnc, err := s.box.Seal(ep.PGPPassphrase)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	headersJSON, err := marshalHeaders(ep.CustomHeaders)
+	ep.Portal = defaultStr(ep.Portal, "Default")
+	ep.Environment = defaultStr(ep.Environment, "Production")
+	sealed, err := s.sealEndpointConfig(ep.APIKey, ep.HMACSecret, ep.PGPPrivateKey, ep.PGPPassphrase, ep.CustomHeaders)
 	if err != nil {
 		return Endpoint{}, err
 	}
 
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO endpoints (
 			portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
@@ -566,8 +523,8 @@ func (s *Store) CreateEndpoint(ctx context.Context, ep Endpoint) (Endpoint, erro
 			created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		ep.Portal, ep.Environment, ep.Name, ep.Slug, boolToInt(ep.Enabled), apiKeyEnc, hmacEnc, boolToInt(ep.HMACRequired),
-		headersJSON, pgpKeyEnc, pgpPassEnc,
+		ep.Portal, ep.Environment, ep.Name, ep.Slug, boolToInt(ep.Enabled), sealed.apiKey, sealed.hmacSecret, boolToInt(ep.HMACRequired),
+		sealed.headersJSON, sealed.pgpKey, sealed.pgpPass,
 		ep.RetentionDays, ep.HeartbeatRetentionDays, boolToInt(ep.StoreRawOnError),
 		now, now,
 	)
@@ -614,35 +571,16 @@ func (s *Store) UpdateEndpoint(ctx context.Context, id int64, p EndpointPatch) (
 		return Endpoint{}, err
 	}
 
-	if strings.TrimSpace(p.Portal) == "" {
-		p.Portal = "Default"
-	}
-	if strings.TrimSpace(p.Environment) == "" {
-		p.Environment = "Production"
-	}
+	p.Portal = defaultStr(p.Portal, "Default")
+	p.Environment = defaultStr(p.Environment, "Production")
 
-	apiKey := resolveSecretPatch(existing.APIKey, p.APIKey, p.ClearAPIKey)
-	hmacSecret := resolveSecretPatch(existing.HMACSecret, p.HMACSecret, p.ClearHMACSecret)
-	pgpKey := resolveSecretPatch(existing.PGPPrivateKey, p.PGPPrivateKey, p.ClearPGPPrivateKey)
-	pgpPass := resolveSecretPatch(existing.PGPPassphrase, p.PGPPassphrase, p.ClearPGPPassphrase)
-
-	apiKeyEnc, err := s.box.Seal(apiKey)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	hmacEnc, err := s.box.Seal(hmacSecret)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	pgpKeyEnc, err := s.box.Seal(pgpKey)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	pgpPassEnc, err := s.box.Seal(pgpPass)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	headersJSON, err := marshalHeaders(p.CustomHeaders)
+	sealed, err := s.sealEndpointConfig(
+		resolveSecretPatch(existing.APIKey, p.APIKey, p.ClearAPIKey),
+		resolveSecretPatch(existing.HMACSecret, p.HMACSecret, p.ClearHMACSecret),
+		resolveSecretPatch(existing.PGPPrivateKey, p.PGPPrivateKey, p.ClearPGPPrivateKey),
+		resolveSecretPatch(existing.PGPPassphrase, p.PGPPassphrase, p.ClearPGPPassphrase),
+		p.CustomHeaders,
+	)
 	if err != nil {
 		return Endpoint{}, err
 	}
@@ -658,8 +596,8 @@ func (s *Store) UpdateEndpoint(ctx context.Context, id int64, p EndpointPatch) (
 		WHERE id = ?
 	`,
 		p.Portal, p.Environment, p.Name, p.Slug, boolToInt(p.Enabled),
-		apiKeyEnc, hmacEnc, boolToInt(p.HMACRequired),
-		headersJSON, pgpKeyEnc, pgpPassEnc,
+		sealed.apiKey, sealed.hmacSecret, boolToInt(p.HMACRequired),
+		sealed.headersJSON, sealed.pgpKey, sealed.pgpPass,
 		p.RetentionDays, p.HeartbeatRetentionDays, boolToInt(p.StoreRawOnError),
 		now, id,
 	)
@@ -763,11 +701,7 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]WebhookEvent, 
 	}
 
 	querySQL := `
-		SELECT e.id, e.endpoint_id, ep.portal, ep.environment, ep.name, ep.slug,
-		       e.received_at, e.kind, e.status_code,
-		       e.error_message, e.subscription_id, e.session_id, e.attempt_number, e.record_count,
-		       e.event_cases, e.was_encrypted, e.was_compressed, e.pgp_key_name,
-		       e.headers_json, e.payload_json, e.raw_size_bytes, e.decoded_size_bytes
+		SELECT ` + eventSelectCols + `
 		FROM webhook_events e
 		JOIN endpoints ep ON ep.id = e.endpoint_id
 		` + where + `
@@ -795,11 +729,7 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]WebhookEvent, 
 // GetEvent returns a single event by ID.
 func (s *Store) GetEvent(ctx context.Context, id int64) (WebhookEvent, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT e.id, e.endpoint_id, ep.portal, ep.environment, ep.name, ep.slug,
-		       e.received_at, e.kind, e.status_code,
-		       e.error_message, e.subscription_id, e.session_id, e.attempt_number, e.record_count,
-		       e.event_cases, e.was_encrypted, e.was_compressed, e.pgp_key_name,
-		       e.headers_json, e.payload_json, e.raw_size_bytes, e.decoded_size_bytes
+		SELECT `+eventSelectCols+`
 		FROM webhook_events e
 		JOIN endpoints ep ON ep.id = e.endpoint_id
 		WHERE e.id = ?
@@ -1118,9 +1048,51 @@ func scanEndpointRaw(sc scanner) (Endpoint, string, string, string, string, erro
 		return Endpoint{}, "", "", "", "", err
 	}
 
+	hydrateEndpoint(&ep, enabledInt, hmacReqInt, storeRawInt, apiEnc, hmacEnc, headersJSON, pgpKeyEnc, pgpPassEnc, retDays, hbRetDays, createdStr, updatedStr)
+	return ep, apiEnc, hmacEnc, pgpKeyEnc, pgpPassEnc, nil
+}
+
+type sealedEndpointConfig struct {
+	apiKey      string
+	hmacSecret  string
+	pgpKey      string
+	pgpPass     string
+	headersJSON string
+}
+
+func (s *Store) sealEndpointConfig(apiKey, hmacSecret, pgpKey, pgpPass string, headers map[string]string) (sealedEndpointConfig, error) {
+	var out sealedEndpointConfig
+	var err error
+	if out.apiKey, err = s.box.Seal(apiKey); err != nil {
+		return out, err
+	}
+	if out.hmacSecret, err = s.box.Seal(hmacSecret); err != nil {
+		return out, err
+	}
+	if out.pgpKey, err = s.box.Seal(pgpKey); err != nil {
+		return out, err
+	}
+	if out.pgpPass, err = s.box.Seal(pgpPass); err != nil {
+		return out, err
+	}
+	out.headersJSON, err = marshalHeaders(headers)
+	return out, err
+}
+
+func hydrateEndpoint(
+	ep *Endpoint,
+	enabledInt, hmacReqInt, storeRawInt int,
+	apiEnc, hmacEnc, headersJSON, pgpKeyEnc, pgpPassEnc string,
+	retDays, hbRetDays sql.NullInt64,
+	createdStr, updatedStr string,
+) {
 	ep.Enabled = enabledInt != 0
 	ep.HMACRequired = hmacReqInt != 0
 	ep.StoreRawOnError = storeRawInt != 0
+	ep.HasAPIKey = apiEnc != ""
+	ep.HasHMACSecret = hmacEnc != ""
+	ep.HasPGPPrivateKey = pgpKeyEnc != ""
+	ep.HasPGPPassphrase = pgpPassEnc != ""
 	ep.CustomHeaders = make(map[string]string)
 	if headersJSON != "" {
 		_ = json.Unmarshal([]byte(headersJSON), &ep.CustomHeaders)
@@ -1135,19 +1107,18 @@ func scanEndpointRaw(sc scanner) (Endpoint, string, string, string, string, erro
 	}
 	ep.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdStr)
 	ep.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedStr)
-	return ep, apiEnc, hmacEnc, pgpKeyEnc, pgpPassEnc, nil
+}
+
+func defaultStr(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(v)
 }
 
 func scanEndpointMasked(sc scanner) (Endpoint, error) {
-	ep, apiEnc, hmacEnc, pgpKeyEnc, pgpPassEnc, err := scanEndpointRaw(sc)
-	if err != nil {
-		return Endpoint{}, err
-	}
-	ep.HasAPIKey = apiEnc != ""
-	ep.HasHMACSecret = hmacEnc != ""
-	ep.HasPGPPrivateKey = pgpKeyEnc != ""
-	ep.HasPGPPassphrase = pgpPassEnc != ""
-	return ep, nil
+	ep, _, _, _, _, err := scanEndpointRaw(sc)
+	return ep, err
 }
 
 func (s *Store) scanEndpointDecrypted(sc scanner) (Endpoint, error) {

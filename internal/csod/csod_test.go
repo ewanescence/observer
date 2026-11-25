@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -197,12 +198,21 @@ func TestGeneratePGPKeyPair_AndDecryptRoundTrip(t *testing.T) {
 		h := http.Header{}
 		h.Set("x-content-encrypted", "true")
 		h.Set("x-original-encoding", "gzip")
-		decoded, err := DecodePayload(h, encBuf.Bytes(), gen.PrivateKey, pass, 1024*1024)
-		if err != nil {
-			t.Fatalf("DecodePayload with generated key (pass=%q): %v", pass, err)
+		var wg sync.WaitGroup
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				decoded, err := DecodePayload(h, encBuf.Bytes(), gen.PrivateKey, pass, 1024*1024)
+				if err != nil {
+					t.Errorf("DecodePayload with generated key (pass=%q): %v", pass, err)
+					return
+				}
+				if !decoded.IsHeartbeat || decoded.SubscriptionID != "sub-gen" {
+					t.Errorf("unexpected decoded payload: %+v", decoded)
+				}
+			}()
 		}
-		if !decoded.IsHeartbeat || decoded.SubscriptionID != "sub-gen" {
-			t.Fatalf("unexpected decoded payload: %+v", decoded)
-		}
+		wg.Wait()
 	}
 }

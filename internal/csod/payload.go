@@ -3,6 +3,7 @@ package csod
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,10 +11,20 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 )
+
+const maxCachedKeyRings = 64
+
+var keyRingCache = struct {
+	mu    sync.RWMutex
+	items map[[32]byte]openpgp.EntityList
+}{
+	items: make(map[[32]byte]openpgp.EntityList),
+}
 
 // Envelope mirrors the common CSOD webhook payload structure.
 type Envelope struct {
@@ -118,8 +129,48 @@ func DecodePayload(headers http.Header, rawBody []byte, pgpKeyArmored, pgpPassph
 	return res, nil
 }
 
-// DecryptPGP decrypts binary or ASCII-armored OpenPGP payloads using an ASCII-armored private key.
+// DecryptPGP decrypts binary or ASCII-armored OpenPGP payloads using a cached unlocked keyring.
 func DecryptPGP(encryptedBytes []byte, privateKeyArmored, passphrase string, maxOut int64) ([]byte, error) {
+	entityList, err := getUnlockedKeyRing(privateKeyArmored, passphrase)
+	if err != nil {
+		return nil, err
+	}
+
+	var packetReader io.Reader = bytes.NewReader(encryptedBytes)
+	trimmed := bytes.TrimSpace(encryptedBytes)
+	if bytes.HasPrefix(trimmed, []byte("-----BEGIN PGP MESSAGE-----")) {
+		block, err := armor.Decode(bytes.NewReader(trimmed))
+		if err != nil {
+			return nil, fmt.Errorf("decode ASCII-armored PGP message: %w", err)
+		}
+		packetReader = block.Body
+	}
+
+	md, err := openpgp.ReadMessage(packetReader, entityList, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read PGP message: %w", err)
+	}
+
+	plain, err := io.ReadAll(io.LimitReader(md.UnverifiedBody, maxOut+1))
+	if err != nil {
+		return nil, fmt.Errorf("read PGP plaintext: %w", err)
+	}
+	if int64(len(plain)) > maxOut {
+		return nil, fmt.Errorf("decrypted PGP payload exceeds %d byte limit", maxOut)
+	}
+	return plain, nil
+}
+
+func getUnlockedKeyRing(privateKeyArmored, passphrase string) (openpgp.EntityList, error) {
+	cacheKey := sha256.Sum256([]byte(privateKeyArmored + "\x00" + passphrase))
+
+	keyRingCache.mu.RLock()
+	if cached, ok := keyRingCache.items[cacheKey]; ok {
+		keyRingCache.mu.RUnlock()
+		return cached, nil
+	}
+	keyRingCache.mu.RUnlock()
+
 	entityList, err := openpgp.ReadArmoredKeyRing(strings.NewReader(privateKeyArmored))
 	if err != nil {
 		return nil, fmt.Errorf("read PGP private key: %w", err)
@@ -144,30 +195,14 @@ func DecryptPGP(encryptedBytes []byte, privateKeyArmored, passphrase string, max
 		}
 	}
 
-	var packetReader io.Reader = bytes.NewReader(encryptedBytes)
-	trimmed := bytes.TrimSpace(encryptedBytes)
-	if bytes.HasPrefix(trimmed, []byte("-----BEGIN PGP MESSAGE-----")) {
-		block, err := armor.Decode(bytes.NewReader(trimmed))
-		if err != nil {
-			return nil, fmt.Errorf("decode ASCII-armored PGP message: %w", err)
-		}
-		packetReader = block.Body
+	keyRingCache.mu.Lock()
+	if len(keyRingCache.items) >= maxCachedKeyRings {
+		keyRingCache.items = make(map[[32]byte]openpgp.EntityList)
 	}
+	keyRingCache.items[cacheKey] = entityList
+	keyRingCache.mu.Unlock()
 
-	md, err := openpgp.ReadMessage(packetReader, entityList, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("read PGP message: %w", err)
-	}
-
-	limited := io.LimitReader(md.UnverifiedBody, maxOut+1)
-	plain, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, fmt.Errorf("read PGP plaintext: %w", err)
-	}
-	if int64(len(plain)) > maxOut {
-		return nil, fmt.Errorf("decrypted PGP payload exceeds %d byte limit", maxOut)
-	}
-	return plain, nil
+	return entityList, nil
 }
 
 func gunzipBytes(compressed []byte, maxOut int64) ([]byte, error) {

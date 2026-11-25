@@ -382,7 +382,15 @@ func TestAutenticoProfileSyncReadOnly(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &auditRes); err != nil {
 		t.Fatalf("unmarshal audit: %v", err)
 	}
-	if len(auditRes.Items) != 1 || auditRes.Items[0].ActorName != "Steve Admin (steve)" {
-		t.Fatalf("expected ActorName 'Steve Admin (steve)', got %+v", auditRes.Items)
+	if len(auditRes.Items) != 1 || auditRes.Items[0].ActorName != "steve" {
+		t.Fatalf("expected ActorName 'steve', got %+v", auditRes.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("X-Auth-User", "xid-99")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `"displayName":"steve"`) {
+		t.Fatalf("expected displayName 'steve' in /api/me, got %s", rec.Body.String())
 	}
 }

@@ -112,7 +112,7 @@ func (s *Server) resolveActor(r *http.Request) (string, string, string) {
 
 	ctx := r.Context()
 	cached, err := s.store.GetUser(ctx, uid)
-	needsSync := err != nil || cached.DisplayName == "" || cached.SyncedAt.IsZero() || time.Since(cached.SyncedAt) > 15*time.Minute
+	needsSync := err != nil || cached.DisplayName == "" || strings.Contains(cached.DisplayName, " (") || cached.SyncedAt.IsZero() || time.Since(cached.SyncedAt) > 15*time.Minute
 
 	if s.autenticoClient.Enabled() && needsSync {
 		lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)

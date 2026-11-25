@@ -117,19 +117,15 @@ func (c *Client) fetchUser(ctx context.Context, token, userID string) (UserProfi
 	}
 
 	d := envelope.Data
-	fullName := strings.TrimSpace(strings.TrimSpace(d.GivenName) + " " + strings.TrimSpace(d.FamilyName))
-	display := fullName
+	display := strings.TrimSpace(d.Username)
+	if display == "" {
+		display = strings.TrimSpace(strings.TrimSpace(d.GivenName) + " " + strings.TrimSpace(d.FamilyName))
+	}
 	if display == "" {
 		display = strings.TrimSpace(d.Nickname)
 	}
 	if display == "" {
-		display = strings.TrimSpace(d.Username)
-	}
-	if display == "" {
 		display = strings.TrimSpace(d.Email)
-	}
-	if fullName != "" && d.Username != "" && !strings.EqualFold(fullName, d.Username) {
-		display = fmt.Sprintf("%s (%s)", fullName, d.Username)
 	}
 
 	return UserProfile{

@@ -57,6 +57,7 @@ func New(cfg config.Config, store *db.Store, ret *retention.Worker) *Server {
 	adminMux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	adminMux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	adminMux.HandleFunc("POST /api/retention/purge", s.handlePurgeNow)
+	adminMux.HandleFunc("POST /api/pgp/generate", s.handleGeneratePGP)
 
 	subFS, _ := fs.Sub(ui.Assets, ".")
 	adminMux.Handle("/", http.FileServer(http.FS(subFS)))

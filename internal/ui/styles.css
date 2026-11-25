@@ -149,3 +149,10 @@ pre {
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .stats { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; margin: 0; }
 .stats dd { margin: 0; font-weight: 600; text-align: right; }
+.pgp-gen-box {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--bg);
+}

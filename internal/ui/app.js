@@ -201,6 +201,12 @@
     $('ep-clear-hmac').checked = false;
     $('ep-clear-pgp').checked = false;
     $('ep-clear-pgppass').checked = false;
+    $('pgp-gen-name').value = ep ? ep.name : '';
+    $('pgp-gen-email').value = '';
+    $('pgp-gen-pass').value = '';
+    $('pgp-pub-text').value = '';
+    $('pgp-pub-meta').textContent = '';
+    $('pgp-pub-output').hidden = true;
 
     form.scrollIntoView({ behavior: 'smooth' });
   }
@@ -210,6 +216,62 @@
   $('ep-pgp-file').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (file) $('ep-pgp-key').value = await file.text();
+  });
+
+  $('btn-gen-pgp').addEventListener('click', async () => {
+    const btn = $('btn-gen-pgp');
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    try {
+      const pass = $('pgp-gen-pass').value || $('ep-pgp-pass').value;
+      const res = await api('/api/pgp/generate', {
+        method: 'POST',
+        body: {
+          name: $('pgp-gen-name').value.trim() || $('ep-name').value.trim(),
+          email: $('pgp-gen-email').value.trim(),
+          passphrase: pass,
+          bits: Number($('pgp-gen-bits').value)
+        }
+      });
+      $('ep-pgp-key').value = res.privateKey;
+      $('ep-clear-pgp').checked = false;
+      if (pass) {
+        $('ep-pgp-pass').value = pass;
+        $('ep-clear-pgppass').checked = false;
+      } else {
+        $('ep-pgp-pass').value = '';
+      }
+      $('pgp-pub-text').value = res.publicKey;
+      $('pgp-pub-meta').textContent = `Key ID: ${res.keyId} · Fingerprint: ${res.fingerprint}`;
+      $('pgp-pub-output').hidden = false;
+      showToast('PGP keypair generated — upload public key to CSOD and click Save Endpoint');
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Generate Keypair';
+    }
+  });
+
+  $('btn-copy-pub').addEventListener('click', () => {
+    const pub = $('pgp-pub-text').value;
+    if (pub) {
+      navigator.clipboard?.writeText(pub);
+      showToast('Public key copied to clipboard');
+    }
+  });
+
+  $('btn-dl-pub').addEventListener('click', () => {
+    const pub = $('pgp-pub-text').value;
+    if (!pub) return;
+    const slug = $('ep-slug').value.trim() || 'csod-webhook';
+    const blob = new Blob([pub], { type: 'application/pgp-keys' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${slug}-public.asc`;
+    a.click();
+    URL.revokeObjectURL(url);
   });
 
   $('endpoint-form').addEventListener('submit', async (e) => {

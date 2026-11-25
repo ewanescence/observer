@@ -182,3 +182,30 @@ func TestEndToEndChallengeWebhookAndRetention(t *testing.T) {
 		t.Fatalf("expected 1 purged event, got %d", purged)
 	}
 }
+
+func TestGeneratePGPEndpoint(t *testing.T) {
+	srv, _, _ := newTestServer(t, true)
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/pgp/generate", strings.NewReader(`{"name":"Test","email":"t@example.com","passphrase":"secret","bits":2048}`))
+	req.Header.Set("X-Auth-User", "admin")
+	req.Header.Set("X-Requested-With", "observer")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		PublicKey   string `json:"publicKey"`
+		PrivateKey  string `json:"privateKey"`
+		KeyID       string `json:"keyId"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !strings.Contains(out.PublicKey, "BEGIN PGP PUBLIC KEY BLOCK") || !strings.Contains(out.PrivateKey, "BEGIN PGP PRIVATE KEY BLOCK") {
+		t.Fatalf("unexpected key output: %+v", out)
+	}
+}

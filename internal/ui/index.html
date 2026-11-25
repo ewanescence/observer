@@ -126,13 +126,52 @@
         </label>
 
         <div class="grid-2">
-          <label>PGP Private Key (ASCII-armored) <span id="ep-pgp-status" class="muted"></span>
-            <textarea id="ep-pgp-key" rows="5" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
-            <input type="file" id="ep-pgp-file" accept=".asc,.pgp,.txt">
-            <label class="checkbox-inline small-check" id="ep-clear-pgp-wrap" hidden>
-              <input type="checkbox" id="ep-clear-pgp"> Clear existing PGP private key
+          <div>
+            <label>PGP Private Key (ASCII-armored) <span id="ep-pgp-status" class="muted"></span>
+              <textarea id="ep-pgp-key" rows="5" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
+              <input type="file" id="ep-pgp-file" accept=".asc,.pgp,.txt">
+              <label class="checkbox-inline small-check" id="ep-clear-pgp-wrap" hidden>
+                <input type="checkbox" id="ep-clear-pgp"> Clear existing PGP private key
+              </label>
             </label>
-          </label>
+
+            <div class="pgp-gen-box">
+              <div class="modal-subhead" style="margin-top:0">
+                <strong>Generate New PGP Keypair</strong>
+                <button type="button" id="btn-gen-pgp" class="btn btn-sm">Generate Keypair</button>
+              </div>
+              <div class="grid-2">
+                <label>Key Name
+                  <input type="text" id="pgp-gen-name" placeholder="Observer CSOD Webhook">
+                </label>
+                <label>Key Email
+                  <input type="email" id="pgp-gen-email" placeholder="webhooks@observer.local">
+                </label>
+              </div>
+              <div class="grid-2">
+                <label>RSA Size
+                  <select id="pgp-gen-bits">
+                    <option value="4096" selected>4096 bits (Recommended)</option>
+                    <option value="2048">2048 bits</option>
+                  </select>
+                </label>
+                <label>Passphrase (optional)
+                  <input type="password" id="pgp-gen-pass" autocomplete="new-password" placeholder="Uses passphrase if set">
+                </label>
+              </div>
+              <div id="pgp-pub-output" hidden>
+                <div class="modal-subhead">
+                  <span class="muted" id="pgp-pub-meta"></span>
+                  <div style="display:flex;gap:6px">
+                    <button type="button" id="btn-copy-pub" class="btn btn-sm">Copy Public Key</button>
+                    <button type="button" id="btn-dl-pub" class="btn btn-sm">Download .asc</button>
+                  </div>
+                </div>
+                <textarea id="pgp-pub-text" rows="4" readonly></textarea>
+                <p class="muted" style="margin:6px 0 0">Upload this public key in Cornerstone under Admin &gt; Tools &gt; Edge &gt; Imports and Feeds &gt; Key Management &gt; Report Encryption Keys, then click Save Endpoint.</p>
+              </div>
+            </div>
+          </div>
           <div>
             <label>PGP Passphrase <span id="ep-pgppass-status" class="muted"></span>
               <input type="password" id="ep-pgp-pass" autocomplete="new-password" placeholder="Optional key passphrase">

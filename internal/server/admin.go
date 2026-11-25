@@ -364,6 +364,27 @@ func (s *Server) handlePurgeNow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"deleted": deleted})
 }
 
+type generatePGPRequest struct {
+	Name       string `json:"name"`
+	Email      string `json:"email"`
+	Passphrase string `json:"passphrase"`
+	Bits       int    `json:"bits"`
+}
+
+func (s *Server) handleGeneratePGP(w http.ResponseWriter, r *http.Request) {
+	var req generatePGPRequest
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	generated, err := csod.GeneratePGPKeyPair(req.Name, req.Email, req.Passphrase, req.Bits)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, generated)
+}
+
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
 	dec := json.NewDecoder(r.Body)

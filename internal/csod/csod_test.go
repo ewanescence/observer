@@ -152,3 +152,48 @@ func TestValidateCustomHeadersConfig(t *testing.T) {
 		t.Fatal("expected non-x- header rejection")
 	}
 }
+
+func TestGeneratePGPKeyPair_AndDecryptRoundTrip(t *testing.T) {
+	for _, pass := range []string{"", "pass-123"} {
+		gen, err := GeneratePGPKeyPair("Observer Test", "test@example.com", pass, 2048)
+		if err != nil {
+			t.Fatalf("GeneratePGPKeyPair(pass=%q): %v", pass, err)
+		}
+		if !strings.Contains(gen.PublicKey, "BEGIN PGP PUBLIC KEY BLOCK") {
+			t.Fatalf("missing armored public key")
+		}
+		if !strings.Contains(gen.PrivateKey, "BEGIN PGP PRIVATE KEY BLOCK") {
+			t.Fatalf("missing armored private key")
+		}
+
+		pubEntities, err := openpgp.ReadArmoredKeyRing(strings.NewReader(gen.PublicKey))
+		if err != nil {
+			t.Fatalf("read generated public key: %v", err)
+		}
+
+		payload := `{"subscriptionId":"sub-gen","sessionId":"sess-gen","attemptNumber":1,"records":[]}`
+		var gzBuf bytes.Buffer
+		zw := gzip.NewWriter(&gzBuf)
+		_, _ = zw.Write([]byte(payload))
+		_ = zw.Close()
+
+		var encBuf bytes.Buffer
+		ptW, err := openpgp.Encrypt(&encBuf, pubEntities, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("encrypt with generated public key: %v", err)
+		}
+		_, _ = io.Copy(ptW, &gzBuf)
+		_ = ptW.Close()
+
+		h := http.Header{}
+		h.Set("x-content-encrypted", "true")
+		h.Set("x-original-encoding", "gzip")
+		decoded, err := DecodePayload(h, encBuf.Bytes(), gen.PrivateKey, pass, 1024*1024)
+		if err != nil {
+			t.Fatalf("DecodePayload with generated key (pass=%q): %v", pass, err)
+		}
+		if !decoded.IsHeartbeat || decoded.SubscriptionID != "sub-gen" {
+			t.Fatalf("unexpected decoded payload: %+v", decoded)
+		}
+	}
+}

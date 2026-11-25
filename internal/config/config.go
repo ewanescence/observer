@@ -18,7 +18,9 @@ type Config struct {
 	TrustForwardAuth       bool
 	AllowedUsers           map[string]struct{}
 	AutenticoAppID         string
+	AutenticoURL           string
 	AutenticoLogoutPath    string
+	CentralLogoutURL       string
 	RetentionDays          int
 	HeartbeatRetentionDays int
 	RetentionInterval      time.Duration
@@ -32,7 +34,8 @@ func Load() (Config, error) {
 		ListenAddr:             envString("OBSERVER_LISTEN_ADDR", ":8080"),
 		DBPath:                 envString("OBSERVER_DB_PATH", "/data/observer.db"),
 		TrustForwardAuth:       envBool("OBSERVER_TRUST_FORWARD_AUTH", true),
-		AutenticoAppID:         envString("OBSERVER_AUTENTICO_APP_ID", ""),
+		AutenticoAppID:         envString("OBSERVER_AUTENTICO_APP_ID", envString("OBSERVED_AUTENTICO_APP_ID", "")),
+		AutenticoURL:           envString("OBSERVER_AUTENTICO_URL", ""),
 		AutenticoLogoutPath:    envString("OBSERVER_AUTENTICO_LOGOUT_PATH", ""),
 		RetentionDays:          envInt("OBSERVER_RETENTION_DAYS", 30),
 		HeartbeatRetentionDays: envInt("OBSERVER_HEARTBEAT_RETENTION_DAYS", 1),
@@ -44,6 +47,9 @@ func Load() (Config, error) {
 
 	if cfg.AutenticoLogoutPath == "" && cfg.AutenticoAppID != "" {
 		cfg.AutenticoLogoutPath = "/_autentico/" + cfg.AutenticoAppID + "/logout"
+	}
+	if cfg.AutenticoURL != "" {
+		cfg.CentralLogoutURL = strings.TrimRight(cfg.AutenticoURL, "/") + "/oauth2/logout"
 	}
 
 	if cfg.RetentionDays < 1 {

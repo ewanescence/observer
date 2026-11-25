@@ -100,6 +100,7 @@ func (s *Server) actorFromRequest(r *http.Request) (string, string) {
 
 func (s *Server) recordAudit(r *http.Request, action, targetType, targetID, targetLabel, details string) {
 	uid, email := s.actorFromRequest(r)
+	_ = s.store.UpsertUser(r.Context(), uid, email)
 	_ = s.store.InsertAuditLog(r.Context(), db.AuditLog{
 		ActorID:     uid,
 		ActorEmail:  email,
@@ -112,10 +113,18 @@ func (s *Server) recordAudit(r *http.Request, action, targetType, targetID, targ
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	uid, email := s.actorFromRequest(r)
+	_ = s.store.UpsertUser(r.Context(), uid, email)
+	displayName := ""
+	if u, err := s.store.GetUser(r.Context(), uid); err == nil {
+		displayName = u.DisplayName
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"email":            strings.TrimSpace(r.Header.Get("X-Auth-Email")),
+		"email":            email,
+		"displayName":      displayName,
 		"forwardAuthTrust": s.cfg.TrustForwardAuth,
 		"logoutPath":       s.cfg.AutenticoLogoutPath,
+		"centralLogoutUrl": s.cfg.CentralLogoutURL,
 	})
 }
 
@@ -442,6 +451,45 @@ func (s *Server) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 		"items": items,
 		"total": total,
 	})
+}
+
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := s.store.ListUsers(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if users == nil {
+		users = []db.User{}
+	}
+	writeJSON(w, http.StatusOK, users)
+}
+
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	var req struct {
+		DisplayName string `json:"displayName"`
+	}
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(strings.TrimSpace(req.DisplayName)) > 80 {
+		writeJSONError(w, http.StatusBadRequest, "displayName must be <= 80 characters")
+		return
+	}
+	updated, err := s.store.SetUserDisplayName(r.Context(), id, req.DisplayName)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.recordAudit(r, "user.rename", "user", updated.UserID, updated.DisplayName,
+		fmt.Sprintf("mapped user %s -> %q", updated.UserID, updated.DisplayName))
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {

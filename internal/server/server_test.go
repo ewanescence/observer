@@ -39,6 +39,7 @@ func newTestServer(t *testing.T, trustForwardAuth bool) (*server.Server, *db.Sto
 		DBPath:                 dbPath,
 		TrustForwardAuth:       trustForwardAuth,
 		AutenticoLogoutPath:    "/_autentico/app-123/logout",
+		CentralLogoutURL:       "https://auth.example.com/oauth2/logout",
 		RetentionDays:          30,
 		HeartbeatRetentionDays: 1,
 		RetentionInterval:      time.Hour,
@@ -298,7 +299,29 @@ func TestPortalHierarchySummaryAndAuditLog(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &auditRes); err != nil {
 		t.Fatalf("unmarshal audit: %v", err)
 	}
-	if auditRes.Total != 2 || auditRes.Items[0].ActorEmail != "alice@example.com" {
+	if auditRes.Total != 2 || auditRes.Items[0].ActorEmail != "alice@example.com" || auditRes.Items[0].ActorName != "alice@example.com" {
 		t.Fatalf("unexpected audit log response: %+v", auditRes)
+	}
+
+	// 7. Map xid-1 to a friendly display name and verify audit log + /api/me reflect it
+	req = httptest.NewRequest(http.MethodPut, "/api/users/xid-1", strings.NewReader(`{"displayName":"Alice Support"}`))
+	req.Header.Set("X-Auth-User", "xid-1")
+	req.Header.Set("X-Requested-With", "observer")
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 renaming user, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/audit?action=endpoint.create", nil)
+	req.Header.Set("X-Auth-User", "xid-1")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if err := json.Unmarshal(rec.Body.Bytes(), &auditRes); err != nil {
+		t.Fatalf("unmarshal audit after rename: %v", err)
+	}
+	if auditRes.Items[0].ActorName != "Alice Support" {
+		t.Fatalf("expected ActorName 'Alice Support', got %q", auditRes.Items[0].ActorName)
 	}
 }

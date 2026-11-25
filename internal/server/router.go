@@ -56,6 +56,8 @@ func New(cfg config.Config, store *db.Store, ret *retention.Worker) *Server {
 	adminMux.HandleFunc("GET /api/events/{id}", s.handleGetEvent)
 	adminMux.HandleFunc("DELETE /api/events/{id}", s.handleDeleteEvent)
 	adminMux.HandleFunc("GET /api/audit", s.handleListAuditLogs)
+	adminMux.HandleFunc("GET /api/users", s.handleListUsers)
+	adminMux.HandleFunc("PUT /api/users/{id}", s.handleUpdateUser)
 	adminMux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	adminMux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	adminMux.HandleFunc("POST /api/retention/purge", s.handlePurgeNow)

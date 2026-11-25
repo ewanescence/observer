@@ -130,11 +130,20 @@ type AuditLog struct {
 	OccurredAt  time.Time `json:"occurredAt"`
 	ActorID     string    `json:"actorId"`
 	ActorEmail  string    `json:"actorEmail"`
+	ActorName   string    `json:"actorName"`
 	Action      string    `json:"action"`
 	TargetType  string    `json:"targetType"`
 	TargetID    string    `json:"targetId"`
 	TargetLabel string    `json:"targetLabel"`
 	Details     string    `json:"details"`
+}
+
+// User maps an Autentico user ID (X-Auth-User) to a human-readable display name.
+type User struct {
+	UserID      string    `json:"userId"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"displayName"`
+	LastSeenAt  time.Time `json:"lastSeenAt"`
 }
 
 // AuditFilter narrows audit log queries.
@@ -277,6 +286,13 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_occurred_at ON audit_logs(occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS users (
+	user_id TEXT PRIMARY KEY,
+	email TEXT NOT NULL DEFAULT '',
+	display_name TEXT NOT NULL DEFAULT '',
+	last_seen_at TEXT NOT NULL
+);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
@@ -826,13 +842,13 @@ func (s *Store) ListAuditLogs(ctx context.Context, f AuditFilter) ([]AuditLog, i
 	var conds []string
 	var args []any
 	if act := strings.TrimSpace(f.Action); act != "" {
-		conds = append(conds, "action = ?")
+		conds = append(conds, "a.action = ?")
 		args = append(args, act)
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
 		like := "%" + q + "%"
-		conds = append(conds, "(actor_email LIKE ? OR actor_id LIKE ? OR action LIKE ? OR target_label LIKE ? OR details LIKE ?)")
-		args = append(args, like, like, like, like, like)
+		conds = append(conds, "(COALESCE(u.display_name, '') LIKE ? OR a.actor_email LIKE ? OR a.actor_id LIKE ? OR a.action LIKE ? OR a.target_label LIKE ? OR a.details LIKE ?)")
+		args = append(args, like, like, like, like, like, like)
 	}
 
 	where := ""
@@ -841,16 +857,23 @@ func (s *Store) ListAuditLogs(ctx context.Context, f AuditFilter) ([]AuditLog, i
 	}
 
 	var total int64
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_logs "+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM audit_logs a
+		LEFT JOIN users u ON u.user_id = a.actor_id
+	`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	qArgs := append(append([]any{}, args...), f.Limit, f.Offset)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, occurred_at, actor_id, actor_email, action, target_type, target_id, target_label, details
-		FROM audit_logs
+		SELECT a.id, a.occurred_at, a.actor_id, a.actor_email,
+		       COALESCE(NULLIF(u.display_name, ''), NULLIF(a.actor_email, ''), NULLIF(u.email, ''), a.actor_id),
+		       a.action, a.target_type, a.target_id, a.target_label, a.details
+		FROM audit_logs a
+		LEFT JOIN users u ON u.user_id = a.actor_id
 		`+where+`
-		ORDER BY occurred_at DESC, id DESC
+		ORDER BY a.occurred_at DESC, a.id DESC
 		LIMIT ? OFFSET ?
 	`, qArgs...)
 	if err != nil {
@@ -862,13 +885,95 @@ func (s *Store) ListAuditLogs(ctx context.Context, f AuditFilter) ([]AuditLog, i
 	for rows.Next() {
 		var a AuditLog
 		var occStr string
-		if err := rows.Scan(&a.ID, &occStr, &a.ActorID, &a.ActorEmail, &a.Action, &a.TargetType, &a.TargetID, &a.TargetLabel, &a.Details); err != nil {
+		if err := rows.Scan(&a.ID, &occStr, &a.ActorID, &a.ActorEmail, &a.ActorName, &a.Action, &a.TargetType, &a.TargetID, &a.TargetLabel, &a.Details); err != nil {
 			return nil, 0, err
 		}
 		a.OccurredAt, _ = time.Parse(time.RFC3339Nano, occStr)
 		items = append(items, a)
 	}
 	return items, total, rows.Err()
+}
+
+// UpsertUser records or refreshes an authenticated user's last seen timestamp and email.
+func (s *Store) UpsertUser(ctx context.Context, userID, email string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	email = strings.TrimSpace(email)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO users (user_id, email, display_name, last_seen_at)
+		VALUES (?, ?, '', ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			email = CASE WHEN excluded.email != '' THEN excluded.email ELSE users.email END,
+			last_seen_at = excluded.last_seen_at
+	`, userID, email, now)
+	return err
+}
+
+// GetUser returns a stored user profile by Autentico user ID.
+func (s *Store) GetUser(ctx context.Context, userID string) (User, error) {
+	var u User
+	var seenStr string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT user_id, email, display_name, last_seen_at
+		FROM users
+		WHERE user_id = ?
+	`, userID).Scan(&u.UserID, &u.Email, &u.DisplayName, &seenStr)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrNotFound
+		}
+		return User{}, err
+	}
+	u.LastSeenAt, _ = time.Parse(time.RFC3339Nano, seenStr)
+	return u, nil
+}
+
+// ListUsers returns all known authenticated users ordered by display name / last seen.
+func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT user_id, email, display_name, last_seen_at
+		FROM users
+		ORDER BY last_seen_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []User
+	for rows.Next() {
+		var u User
+		var seenStr string
+		if err := rows.Scan(&u.UserID, &u.Email, &u.DisplayName, &seenStr); err != nil {
+			return nil, err
+		}
+		u.LastSeenAt, _ = time.Parse(time.RFC3339Nano, seenStr)
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// SetUserDisplayName sets a friendly display name for an Autentico user ID.
+func (s *Store) SetUserDisplayName(ctx context.Context, userID, displayName string) (User, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return User{}, errors.New("userId is required")
+	}
+	displayName = strings.TrimSpace(displayName)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO users (user_id, email, display_name, last_seen_at)
+		VALUES (?, '', ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			display_name = excluded.display_name
+	`, userID, displayName, now)
+	if err != nil {
+		return User{}, err
+	}
+	return s.GetUser(ctx, userID)
 }
 
 // GetRetentionSettings returns stored global retention settings or defaults.

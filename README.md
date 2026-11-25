@@ -24,7 +24,8 @@ Lightweight Go application for receiving, authenticating, decrypting, decompress
    cp .env.example .env
    ```
 
-2. Register Observer as a Protected App in Autentico (`origin`: `https://webhooks.example.com`, `allowed_return_paths`: `["/"]`), note its `data.id`, and set `OBSERVER_AUTENTICO_APP_ID=<id>` (or `OBSERVER_AUTENTICO_LOGOUT_PATH=/_autentico/<id>/logout`) in `.env` so the **Sign out** button is enabled.
+2. Register Observer as a Protected App in Autentico (`origin`: `https://webhooks.example.com`, `allowed_return_paths`: `["/"]`), note its `data.id`, and set `OBSERVER_AUTENTICO_APP_ID=<id>` in `.env` so the **Sign out** button is enabled. Also set `OBSERVER_AUTENTICO_URL=https://auth.example.com` if you want **Sign out** to end the central Autentico SSO session (otherwise Autentico SSO silently re-authenticates when returning to `/`).
+   - *Tip:* Autentico only sends `X-Auth-Email` when a user's email is verified in Autentico. If users only appear by their Autentico ID in **Activity Log**, use the **User Directory** (or **Set name** button on any row) to map each ID to a readable name.
 
 3. Add the site block from `Caddyfile.example` to your Caddy configuration and reload Caddy.
 

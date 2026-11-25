@@ -155,7 +155,7 @@ func TestValidateCustomHeadersConfig(t *testing.T) {
 
 func TestGeneratePGPKeyPair_AndDecryptRoundTrip(t *testing.T) {
 	for _, pass := range []string{"", "pass-123"} {
-		gen, err := GeneratePGPKeyPair("Observer Test", "test@example.com", pass, 2048)
+		gen, err := GeneratePGPKeyPair("Observer Test", "test@example.com", pass, 2048, 730)
 		if err != nil {
 			t.Fatalf("GeneratePGPKeyPair(pass=%q): %v", pass, err)
 		}
@@ -169,6 +169,15 @@ func TestGeneratePGPKeyPair_AndDecryptRoundTrip(t *testing.T) {
 		pubEntities, err := openpgp.ReadArmoredKeyRing(strings.NewReader(gen.PublicKey))
 		if err != nil {
 			t.Fatalf("read generated public key: %v", err)
+		}
+		for _, id := range pubEntities[0].Identities {
+			if id.SelfSignature == nil || id.SelfSignature.KeyLifetimeSecs == nil || *id.SelfSignature.KeyLifetimeSecs == 0 {
+				t.Fatal("expected non-zero KeyLifetimeSecs on primary self-signature")
+			}
+		}
+		if len(pubEntities[0].Subkeys) == 0 || pubEntities[0].Subkeys[0].Sig == nil ||
+			pubEntities[0].Subkeys[0].Sig.KeyLifetimeSecs == nil || *pubEntities[0].Subkeys[0].Sig.KeyLifetimeSecs == 0 {
+			t.Fatal("expected non-zero KeyLifetimeSecs on encryption subkey")
 		}
 
 		payload := `{"subscriptionId":"sub-gen","sessionId":"sess-gen","attemptNumber":1,"records":[]}`

@@ -369,6 +369,7 @@ type generatePGPRequest struct {
 	Email      string `json:"email"`
 	Passphrase string `json:"passphrase"`
 	Bits       int    `json:"bits"`
+	ValidDays  int    `json:"validDays"`
 }
 
 func (s *Server) handleGeneratePGP(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +378,7 @@ func (s *Server) handleGeneratePGP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	generated, err := csod.GeneratePGPKeyPair(req.Name, req.Email, req.Passphrase, req.Bits)
+	generated, err := csod.GeneratePGPKeyPair(req.Name, req.Email, req.Passphrase, req.Bits, req.ValidDays)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return

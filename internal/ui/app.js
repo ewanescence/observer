@@ -230,7 +230,8 @@
           name: $('pgp-gen-name').value.trim() || $('ep-name').value.trim(),
           email: $('pgp-gen-email').value.trim(),
           passphrase: pass,
-          bits: Number($('pgp-gen-bits').value)
+          bits: Number($('pgp-gen-bits').value),
+          validDays: Number($('pgp-gen-days').value)
         }
       });
       $('ep-pgp-key').value = res.privateKey;
@@ -242,7 +243,7 @@
         $('ep-pgp-pass').value = '';
       }
       $('pgp-pub-text').value = res.publicKey;
-      $('pgp-pub-meta').textContent = `Key ID: ${res.keyId} · Fingerprint: ${res.fingerprint}`;
+      $('pgp-pub-meta').textContent = `Key ID: ${res.keyId} · Expires: ${fmtDate(res.expiresAt)}`;
       $('pgp-pub-output').hidden = false;
       showToast('PGP keypair generated — upload public key to CSOD and click Save Endpoint');
     } catch (err) {

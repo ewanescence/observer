@@ -47,6 +47,7 @@ func New(cfg config.Config, store *db.Store, ret *retention.Worker) *Server {
 	// Protected admin API + embedded UI
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("GET /api/me", s.handleMe)
+	adminMux.HandleFunc("GET /api/summary", s.handleSummary)
 	adminMux.HandleFunc("GET /api/endpoints", s.handleListEndpoints)
 	adminMux.HandleFunc("POST /api/endpoints", s.handleCreateEndpoint)
 	adminMux.HandleFunc("PUT /api/endpoints/{id}", s.handleUpdateEndpoint)
@@ -54,6 +55,7 @@ func New(cfg config.Config, store *db.Store, ret *retention.Worker) *Server {
 	adminMux.HandleFunc("GET /api/events", s.handleListEvents)
 	adminMux.HandleFunc("GET /api/events/{id}", s.handleGetEvent)
 	adminMux.HandleFunc("DELETE /api/events/{id}", s.handleDeleteEvent)
+	adminMux.HandleFunc("GET /api/audit", s.handleListAuditLogs)
 	adminMux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	adminMux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	adminMux.HandleFunc("POST /api/retention/purge", s.handlePurgeNow)

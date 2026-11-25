@@ -43,7 +43,7 @@ body {
 }
 .brand { display: flex; align-items: center; gap: 8px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); display: inline-block; }
-.tabs { display: flex; gap: 6px; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .tab {
   background: transparent;
   color: var(--muted);
@@ -59,9 +59,9 @@ body {
   background: var(--bg);
 }
 .user-box { display: flex; align-items: center; gap: 10px; }
-.container { max-width: 1200px; margin: 20px auto; padding: 0 16px; }
+.container { max-width: 1240px; margin: 20px auto; padding: 0 16px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
-.toolbar input[type="search"] { flex: 1; min-width: 200px; }
+.toolbar input[type="search"] { flex: 1; min-width: 190px; }
 input, select, textarea {
   width: 100%;
   padding: 7px 10px;
@@ -73,6 +73,7 @@ input, select, textarea {
 }
 .toolbar select, .toolbar input { width: auto; }
 label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-weight: 500; }
+.hint { font-size: 12px; color: var(--muted); font-weight: 400; }
 .checkbox-inline { flex-direction: row; align-items: center; gap: 6px; margin: 0; font-weight: 400; cursor: pointer; }
 .checkbox-inline input { width: auto; }
 .small-check { margin-top: 4px; font-size: 12px; color: var(--muted); }
@@ -92,8 +93,8 @@ label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; fo
 .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
-tbody tr { cursor: pointer; }
-tbody tr:hover { background: rgba(56, 189, 248, 0.08); }
+#events-tbody tr { cursor: pointer; }
+#events-tbody tr:hover { background: rgba(56, 189, 248, 0.08); }
 .badge {
   display: inline-block;
   padding: 2px 7px;
@@ -106,7 +107,7 @@ tbody tr:hover { background: rgba(56, 189, 248, 0.08); }
 .badge-heartbeat { color: var(--muted); }
 .badge-challenge { color: var(--accent); border-color: var(--accent); }
 .badge-error { color: var(--err); border-color: var(--err); }
-.cards { display: grid; gap: 12px; }
+.badge-env { color: var(--accent); border-color: var(--border); background: var(--bg); }
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -114,7 +115,8 @@ tbody tr:hover { background: rgba(56, 189, 248, 0.08); }
   padding: 16px;
 }
 .form-card { margin-top: 16px; }
-.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
 .muted { color: var(--muted); font-size: 12px; }
@@ -136,7 +138,7 @@ dialog {
   padding: 18px;
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
-.modal-head, .modal-subhead { display: flex; justify-content: space-between; align-items: center; margin: 10px 0; }
+.modal-head, .modal-subhead { display: flex; justify-content: space-between; align-items: center; margin: 10px 0; gap: 8px; flex-wrap: wrap; }
 .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; }
 pre {
   background: var(--code);
@@ -149,10 +151,104 @@ pre {
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .stats { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; margin: 0; }
 .stats dd { margin: 0; font-weight: 600; text-align: right; }
+
+/* Summary KPIs & Portal > Env > Endpoint hierarchy */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.kpi-label { font-size: 12px; color: var(--muted); }
+.kpi-value { font-size: 20px; font-weight: 700; margin-top: 2px; }
+.kpi-value.err { color: var(--err); }
+
+.chip-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.chip {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.chip:hover { border-color: var(--accent); }
+.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.portal-tree { display: grid; gap: 14px; }
+.portal-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.portal-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: rgba(56, 189, 248, 0.06);
+  border-bottom: 1px solid var(--border);
+}
+.env-group {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.env-group:last-child { border-bottom: none; }
+.env-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ep-list { display: grid; gap: 8px; }
+.ep-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+/* Guided Endpoint Form */
+.step-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 0 0 14px;
+}
+.step-box legend {
+  padding: 0 6px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.sub-box {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+.header-rows { display: grid; gap: 8px; margin-top: 8px; }
+.header-row { display: grid; grid-template-columns: 1fr 1.5fr auto; gap: 8px; align-items: center; }
 .pgp-gen-box {
   border: 1px dashed var(--border);
   border-radius: 6px;
-  padding: 10px 12px;
-  margin-bottom: 12px;
+  padding: 12px;
+  margin-bottom: 14px;
   background: var(--bg);
 }

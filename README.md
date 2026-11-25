@@ -4,14 +4,16 @@ Lightweight Go application for receiving, authenticating, decrypting, decompress
 
 ## Features
 
+- **Portal > Environment > Endpoint organization**: group endpoints by client portal and environment (`Production`, `Pilot`, `Stage`, `Sandbox`, or custom), with per-portal and per-environment event/error/heartbeat summaries and quick-filter chips.
 - **Per-endpoint listener configuration** (`/hooks/<slug>`):
   - `x-api-key` verification
   - Up to 4 custom `x-*` header checks (enforcing CSOD key/value regexes)
   - **Token Challenge** (`x-challenge-sha256`) verification response
   - **HMAC-SHA256** verification (`Authorization: HMAC-SHA256 Credential=...&SignedHeaders=...&Signature=...` + `x-content-sha256` body digest)
-  - **PGP decryption** (`x-content-encrypted: true` with ASCII-armored private key + optional passphrase)
+  - **PGP decryption** (`x-content-encrypted: true` with ASCII-armored private key + optional passphrase) and **in-app RSA PGP keypair generator**
   - **`gzip` decompression** (`Content-Encoding: gzip` and `x-original-encoding: gzip`, strictly ordered *Decrypt -> Decompress -> Parse*)
 - **SQLite storage + automatic retention**: separates real events, heartbeats (`records: []`), challenges, and errors, purging expired data on a configurable schedule.
+- **Activity Log**: records every administrative operation (`endpoint.*`, `pgp.generate`, `event.delete`, `settings.update`, `retention.purge`) with actor and browser-local timestamps.
 - **Minimal embedded Web UI**: protected by Caddy + Autentico ForwardAuth (`X-Auth-User` / `X-Auth-Email`).
 
 ## VPS Deployment
@@ -22,7 +24,7 @@ Lightweight Go application for receiving, authenticating, decrypting, decompress
    cp .env.example .env
    ```
 
-2. Register Observer as a Protected App in Autentico (`origin`: `https://webhooks.example.com`, `allowed_return_paths`: `["/"]`), note its `data.id`, and optionally set `OBSERVER_AUTENTICO_LOGOUT_PATH=/_autentico/<id>/logout` in `.env`.
+2. Register Observer as a Protected App in Autentico (`origin`: `https://webhooks.example.com`, `allowed_return_paths`: `["/"]`), note its `data.id`, and set `OBSERVER_AUTENTICO_APP_ID=<id>` (or `OBSERVER_AUTENTICO_LOGOUT_PATH=/_autentico/<id>/logout`) in `.env` so the **Sign out** button is enabled.
 
 3. Add the site block from `Caddyfile.example` to your Caddy configuration and reload Caddy.
 

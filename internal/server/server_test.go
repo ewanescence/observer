@@ -38,6 +38,7 @@ func newTestServer(t *testing.T, trustForwardAuth bool) (*server.Server, *db.Sto
 	cfg := config.Config{
 		DBPath:                 dbPath,
 		TrustForwardAuth:       trustForwardAuth,
+		AutenticoLogoutPath:    "/_autentico/app-123/logout",
 		RetentionDays:          30,
 		HeartbeatRetentionDays: 1,
 		RetentionInterval:      time.Hour,
@@ -207,5 +208,97 @@ func TestGeneratePGPEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(out.PublicKey, "BEGIN PGP PUBLIC KEY BLOCK") || !strings.Contains(out.PrivateKey, "BEGIN PGP PRIVATE KEY BLOCK") {
 		t.Fatalf("unexpected key output: %+v", out)
+	}
+}
+
+func TestPortalHierarchySummaryAndAuditLog(t *testing.T) {
+	srv, _, _ := newTestServer(t, true)
+	h := srv.Handler()
+
+	// 1. Check /api/me hides userId and exposes email + logoutPath
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("X-Auth-User", "xid-secret-123")
+	req.Header.Set("X-Auth-Email", "alice@example.com")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /api/me, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "xid-secret-123") {
+		t.Fatalf("expected userId not to be returned by /api/me: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "alice@example.com") || !strings.Contains(rec.Body.String(), "/_autentico/app-123/logout") {
+		t.Fatalf("unexpected /api/me payload: %s", rec.Body.String())
+	}
+
+	// 2. Create two endpoints in different environments under Acme Corp
+	for _, body := range []string{
+		`{"portal":"Acme Corp","environment":"Production","name":"Training","slug":"acme-prod-training","enabled":true,"hmacRequired":false,"customHeaders":{}}`,
+		`{"portal":"Acme Corp","environment":"Pilot","name":"Employee","slug":"acme-pilot-emp","enabled":true,"hmacRequired":false,"customHeaders":{}}`,
+	} {
+		req = httptest.NewRequest(http.MethodPost, "/api/endpoints", strings.NewReader(body))
+		req.Header.Set("X-Auth-User", "xid-1")
+		req.Header.Set("X-Auth-Email", "alice@example.com")
+		req.Header.Set("X-Requested-With", "observer")
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201 creating endpoint, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	// 3. Send event to Pilot endpoint
+	req = httptest.NewRequest(http.MethodPost, "/hooks/acme-pilot-emp", strings.NewReader(`{"subscriptionId":"s1","records":[{"offset":1,"value":{"employeeEventsCase":"EmployeeCreated"}}]}`))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 ingesting event, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 4. Verify /api/summary groups Portal > Environment > Endpoint with counts
+	req = httptest.NewRequest(http.MethodGet, "/api/summary", nil)
+	req.Header.Set("X-Auth-User", "xid-1")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /api/summary, got %d", rec.Code)
+	}
+	var sumRes struct {
+		Portals []db.PortalSummary `json:"portals"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &sumRes); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if len(sumRes.Portals) != 1 || sumRes.Portals[0].Portal != "Acme Corp" || sumRes.Portals[0].EventCount != 1 || len(sumRes.Portals[0].Environments) != 2 {
+		t.Fatalf("unexpected portal summary: %+v", sumRes.Portals)
+	}
+
+	// 5. Verify /api/events filters by portal & environment
+	req = httptest.NewRequest(http.MethodGet, "/api/events?portal=Acme+Corp&environment=Production", nil)
+	req.Header.Set("X-Auth-User", "xid-1")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `"total":0`) {
+		t.Fatalf("expected 0 events in Production, got %s", rec.Body.String())
+	}
+
+	// 6. Verify /api/audit recorded both endpoint.create operations with actorEmail
+	req = httptest.NewRequest(http.MethodGet, "/api/audit?action=endpoint.create", nil)
+	req.Header.Set("X-Auth-User", "xid-1")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /api/audit, got %d", rec.Code)
+	}
+	var auditRes struct {
+		Total int64         `json:"total"`
+		Items []db.AuditLog `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &auditRes); err != nil {
+		t.Fatalf("unmarshal audit: %v", err)
+	}
+	if auditRes.Total != 2 || auditRes.Items[0].ActorEmail != "alice@example.com" {
+		t.Fatalf("unexpected audit log response: %+v", auditRes)
 	}
 }

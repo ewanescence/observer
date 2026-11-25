@@ -19,7 +19,7 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-// Store wraps SQLite persistence for endpoints, webhook events, and runtime settings.
+// Store wraps SQLite persistence for endpoints, webhook events, audit logs, and runtime settings.
 type Store struct {
 	db  *sql.DB
 	box *crypto.Box
@@ -28,6 +28,8 @@ type Store struct {
 // Endpoint configures a CSOD webhook listener mounted at /hooks/{Slug}.
 type Endpoint struct {
 	ID                     int64             `json:"id"`
+	Portal                 string            `json:"portal"`
+	Environment            string            `json:"environment"`
 	Name                   string            `json:"name"`
 	Slug                   string            `json:"slug"`
 	Enabled                bool              `json:"enabled"`
@@ -48,38 +50,99 @@ type Endpoint struct {
 	UpdatedAt              time.Time         `json:"updatedAt"`
 }
 
+// EndpointSummary enriches an endpoint with live event counts.
+type EndpointSummary struct {
+	Endpoint
+	EventCount     int64      `json:"eventCount"`
+	HeartbeatCount int64      `json:"heartbeatCount"`
+	ChallengeCount int64      `json:"challengeCount"`
+	ErrorCount     int64      `json:"errorCount"`
+	LastReceivedAt *time.Time `json:"lastReceivedAt,omitempty"`
+}
+
+// EnvironmentSummary aggregates endpoints and event counts for a Portal > Environment.
+type EnvironmentSummary struct {
+	Environment    string            `json:"environment"`
+	EndpointCount  int               `json:"endpointCount"`
+	EnabledCount   int               `json:"enabledCount"`
+	EventCount     int64             `json:"eventCount"`
+	HeartbeatCount int64             `json:"heartbeatCount"`
+	ChallengeCount int64             `json:"challengeCount"`
+	ErrorCount     int64             `json:"errorCount"`
+	LastReceivedAt *time.Time        `json:"lastReceivedAt,omitempty"`
+	Endpoints      []EndpointSummary `json:"endpoints"`
+}
+
+// PortalSummary aggregates environments and event counts for a Portal.
+type PortalSummary struct {
+	Portal         string               `json:"portal"`
+	EndpointCount  int                  `json:"endpointCount"`
+	EnabledCount   int                  `json:"enabledCount"`
+	EventCount     int64                `json:"eventCount"`
+	HeartbeatCount int64                `json:"heartbeatCount"`
+	ChallengeCount int64                `json:"challengeCount"`
+	ErrorCount     int64                `json:"errorCount"`
+	LastReceivedAt *time.Time           `json:"lastReceivedAt,omitempty"`
+	Environments   []EnvironmentSummary `json:"environments"`
+}
+
 // WebhookEvent records a single incoming CSOD webhook delivery, heartbeat, challenge, or error.
 type WebhookEvent struct {
-	ID               int64     `json:"id"`
-	EndpointID       int64     `json:"endpointId"`
-	EndpointName     string    `json:"endpointName,omitempty"`
-	EndpointSlug     string    `json:"endpointSlug,omitempty"`
-	ReceivedAt       time.Time `json:"receivedAt"`
-	Kind             string    `json:"kind"` // event | heartbeat | challenge | error
-	StatusCode       int       `json:"statusCode"`
-	ErrorMessage     string    `json:"errorMessage,omitempty"`
-	SubscriptionID   string    `json:"subscriptionId,omitempty"`
-	SessionID        string    `json:"sessionId,omitempty"`
-	AttemptNumber    int       `json:"attemptNumber"`
-	RecordCount      int       `json:"recordCount"`
-	EventCases       string    `json:"eventCases,omitempty"`
-	WasEncrypted     bool      `json:"wasEncrypted"`
-	WasCompressed    bool      `json:"wasCompressed"`
-	PGPKeyName       string    `json:"pgpKeyName,omitempty"`
-	HeadersJSON      string    `json:"headersJson,omitempty"`
-	PayloadJSON      string    `json:"payloadJson,omitempty"`
-	RawSizeBytes     int       `json:"rawSizeBytes"`
-	DecodedSizeBytes int       `json:"decodedSizeBytes"`
+	ID                  int64     `json:"id"`
+	EndpointID          int64     `json:"endpointId"`
+	EndpointPortal      string    `json:"endpointPortal,omitempty"`
+	EndpointEnvironment string    `json:"endpointEnvironment,omitempty"`
+	EndpointName        string    `json:"endpointName,omitempty"`
+	EndpointSlug        string    `json:"endpointSlug,omitempty"`
+	ReceivedAt          time.Time `json:"receivedAt"`
+	Kind                string    `json:"kind"` // event | heartbeat | challenge | error
+	StatusCode          int       `json:"statusCode"`
+	ErrorMessage        string    `json:"errorMessage,omitempty"`
+	SubscriptionID      string    `json:"subscriptionId,omitempty"`
+	SessionID           string    `json:"sessionId,omitempty"`
+	AttemptNumber       int       `json:"attemptNumber"`
+	RecordCount         int       `json:"recordCount"`
+	EventCases          string    `json:"eventCases,omitempty"`
+	WasEncrypted        bool      `json:"wasEncrypted"`
+	WasCompressed       bool      `json:"wasCompressed"`
+	PGPKeyName          string    `json:"pgpKeyName,omitempty"`
+	HeadersJSON         string    `json:"headersJson,omitempty"`
+	PayloadJSON         string    `json:"payloadJson,omitempty"`
+	RawSizeBytes        int       `json:"rawSizeBytes"`
+	DecodedSizeBytes    int       `json:"decodedSizeBytes"`
 }
 
 // EventFilter narrows event queries in the admin UI.
 type EventFilter struct {
+	Portal            string
+	Environment       string
 	EndpointID        int64
 	Kind              string
 	IncludeHeartbeats bool
 	Query             string
 	Limit             int
 	Offset            int
+}
+
+// AuditLog records an administrative operation performed through Observer.
+type AuditLog struct {
+	ID          int64     `json:"id"`
+	OccurredAt  time.Time `json:"occurredAt"`
+	ActorID     string    `json:"actorId"`
+	ActorEmail  string    `json:"actorEmail"`
+	Action      string    `json:"action"`
+	TargetType  string    `json:"targetType"`
+	TargetID    string    `json:"targetId"`
+	TargetLabel string    `json:"targetLabel"`
+	Details     string    `json:"details"`
+}
+
+// AuditFilter narrows audit log queries.
+type AuditFilter struct {
+	Action string
+	Query  string
+	Limit  int
+	Offset int
 }
 
 // RetentionSettings holds global retention periods stored in SQLite.
@@ -90,12 +153,13 @@ type RetentionSettings struct {
 
 // Stats summarizes database usage for the settings view.
 type Stats struct {
-	TotalEvents       int64 `json:"totalEvents"`
-	HeartbeatEvents   int64 `json:"heartbeatEvents"`
-	ErrorEvents       int64 `json:"errorEvents"`
-	EndpointCount     int64 `json:"endpointCount"`
-	DBSizeBytes       int64 `json:"dbSizeBytes"`
-	AtRestEncryption  bool  `json:"atRestEncryption"`
+	TotalEvents      int64 `json:"totalEvents"`
+	HeartbeatEvents  int64 `json:"heartbeatEvents"`
+	ErrorEvents      int64 `json:"errorEvents"`
+	EndpointCount    int64 `json:"endpointCount"`
+	AuditLogCount    int64 `json:"auditLogCount"`
+	DBSizeBytes      int64 `json:"dbSizeBytes"`
+	AtRestEncryption bool  `json:"atRestEncryption"`
 }
 
 // Open initializes SQLite at path (creating parent directories if needed) and runs migrations.
@@ -152,6 +216,8 @@ func (s *Store) migrate(ctx context.Context) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS endpoints (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	portal TEXT NOT NULL DEFAULT 'Default',
+	environment TEXT NOT NULL DEFAULT 'Production',
 	name TEXT NOT NULL,
 	slug TEXT NOT NULL UNIQUE,
 	enabled INTEGER NOT NULL DEFAULT 1,
@@ -197,20 +263,75 @@ CREATE TABLE IF NOT EXISTS settings (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	occurred_at TEXT NOT NULL,
+	actor_id TEXT NOT NULL DEFAULT '',
+	actor_email TEXT NOT NULL DEFAULT '',
+	action TEXT NOT NULL,
+	target_type TEXT NOT NULL,
+	target_id TEXT NOT NULL DEFAULT '',
+	target_label TEXT NOT NULL DEFAULT '',
+	details TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_occurred_at ON audit_logs(occurred_at DESC);
 `
-	_, err := s.db.ExecContext(ctx, schema)
+	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+
+	// Upgrade existing databases created before portal/environment columns existed.
+	cols, err := s.tableColumns(ctx, "endpoints")
+	if err != nil {
+		return err
+	}
+	if !cols["portal"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE endpoints ADD COLUMN portal TEXT NOT NULL DEFAULT 'Default'`); err != nil {
+			return err
+		}
+	}
+	if !cols["environment"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE endpoints ADD COLUMN environment TEXT NOT NULL DEFAULT 'Production'`); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_endpoints_portal_env ON endpoints(portal, environment, name)`)
 	return err
 }
 
-// ListEndpoints returns all endpoints with secret material masked and presence flags populated.
+func (s *Store) tableColumns(ctx context.Context, table string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols[strings.ToLower(name)] = true
+	}
+	return cols, rows.Err()
+}
+
+// ListEndpoints returns all endpoints ordered by Portal > Environment > Name with masked secrets.
 func (s *Store) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
+		SELECT id, portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
 		       custom_headers_json, pgp_private_key_enc, pgp_passphrase_enc,
 		       retention_days, heartbeat_retention_days, store_raw_on_error,
 		       created_at, updated_at
 		FROM endpoints
-		ORDER BY id ASC
+		ORDER BY lower(portal) ASC, lower(environment) ASC, lower(name) ASC, id ASC
 	`)
 	if err != nil {
 		return nil, err
@@ -228,10 +349,135 @@ func (s *Store) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 	return out, rows.Err()
 }
 
+// GetPortalHierarchy returns endpoints and event counts organized as Portal > Environment > Endpoint.
+func (s *Store) GetPortalHierarchy(ctx context.Context) ([]PortalSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ep.id, ep.portal, ep.environment, ep.name, ep.slug, ep.enabled,
+		       ep.api_key_enc, ep.hmac_secret_enc, ep.hmac_required,
+		       ep.custom_headers_json, ep.pgp_private_key_enc, ep.pgp_passphrase_enc,
+		       ep.retention_days, ep.heartbeat_retention_days, ep.store_raw_on_error,
+		       ep.created_at, ep.updated_at,
+		       COALESCE(SUM(CASE WHEN ev.kind = 'event' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN ev.kind = 'heartbeat' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN ev.kind = 'challenge' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN ev.kind = 'error' THEN 1 ELSE 0 END), 0),
+		       MAX(ev.received_at)
+		FROM endpoints ep
+		LEFT JOIN webhook_events ev ON ev.endpoint_id = ep.id
+		GROUP BY ep.id
+		ORDER BY lower(ep.portal) ASC, lower(ep.environment) ASC, lower(ep.name) ASC, ep.id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var portals []PortalSummary
+	portalIdx := make(map[string]int)
+	envIdx := make(map[string]int)
+
+	for rows.Next() {
+		var es EndpointSummary
+		var enabledInt, hmacReqInt, storeRawInt int
+		var apiEnc, hmacEnc, headersJSON, pgpKeyEnc, pgpPassEnc string
+		var retDays, hbRetDays sql.NullInt64
+		var createdStr, updatedStr string
+		var lastRecv sql.NullString
+
+		if err := rows.Scan(
+			&es.ID, &es.Portal, &es.Environment, &es.Name, &es.Slug, &enabledInt,
+			&apiEnc, &hmacEnc, &hmacReqInt,
+			&headersJSON, &pgpKeyEnc, &pgpPassEnc,
+			&retDays, &hbRetDays, &storeRawInt,
+			&createdStr, &updatedStr,
+			&es.EventCount, &es.HeartbeatCount, &es.ChallengeCount, &es.ErrorCount, &lastRecv,
+		); err != nil {
+			return nil, err
+		}
+
+		es.Enabled = enabledInt != 0
+		es.HMACRequired = hmacReqInt != 0
+		es.StoreRawOnError = storeRawInt != 0
+		es.HasAPIKey = apiEnc != ""
+		es.HasHMACSecret = hmacEnc != ""
+		es.HasPGPPrivateKey = pgpKeyEnc != ""
+		es.HasPGPPassphrase = pgpPassEnc != ""
+		es.CustomHeaders = make(map[string]string)
+		if headersJSON != "" {
+			_ = json.Unmarshal([]byte(headersJSON), &es.CustomHeaders)
+		}
+		if retDays.Valid {
+			v := int(retDays.Int64)
+			es.RetentionDays = &v
+		}
+		if hbRetDays.Valid {
+			v := int(hbRetDays.Int64)
+			es.HeartbeatRetentionDays = &v
+		}
+		es.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdStr)
+		es.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedStr)
+		if lastRecv.Valid && lastRecv.String != "" {
+			if t, err := time.Parse(time.RFC3339Nano, lastRecv.String); err == nil {
+				es.LastReceivedAt = &t
+			}
+		}
+
+		pKey := strings.ToLower(es.Portal)
+		pPos, exists := portalIdx[pKey]
+		if !exists {
+			pPos = len(portals)
+			portalIdx[pKey] = pPos
+			portals = append(portals, PortalSummary{Portal: es.Portal})
+		}
+
+		eKey := pKey + "\x00" + strings.ToLower(es.Environment)
+		ePos, eExists := envIdx[eKey]
+		if !eExists {
+			ePos = len(portals[pPos].Environments)
+			envIdx[eKey] = ePos
+			portals[pPos].Environments = append(portals[pPos].Environments, EnvironmentSummary{Environment: es.Environment})
+		}
+
+		p := &portals[pPos]
+		env := &p.Environments[ePos]
+
+		env.Endpoints = append(env.Endpoints, es)
+		env.EndpointCount++
+		p.EndpointCount++
+		if es.Enabled {
+			env.EnabledCount++
+			p.EnabledCount++
+		}
+		env.EventCount += es.EventCount
+		env.HeartbeatCount += es.HeartbeatCount
+		env.ChallengeCount += es.ChallengeCount
+		env.ErrorCount += es.ErrorCount
+		env.LastReceivedAt = newerTime(env.LastReceivedAt, es.LastReceivedAt)
+
+		p.EventCount += es.EventCount
+		p.HeartbeatCount += es.HeartbeatCount
+		p.ChallengeCount += es.ChallengeCount
+		p.ErrorCount += es.ErrorCount
+		p.LastReceivedAt = newerTime(p.LastReceivedAt, es.LastReceivedAt)
+	}
+	return portals, rows.Err()
+}
+
+func newerTime(a, b *time.Time) *time.Time {
+	if b == nil {
+		return a
+	}
+	if a == nil || b.After(*a) {
+		t := *b
+		return &t
+	}
+	return a
+}
+
 // GetEndpointBySlug returns an endpoint with decrypted secrets for webhook ingestion.
 func (s *Store) GetEndpointBySlug(ctx context.Context, slug string) (Endpoint, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
+		SELECT id, portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
 		       custom_headers_json, pgp_private_key_enc, pgp_passphrase_enc,
 		       retention_days, heartbeat_retention_days, store_raw_on_error,
 		       created_at, updated_at
@@ -244,7 +490,7 @@ func (s *Store) GetEndpointBySlug(ctx context.Context, slug string) (Endpoint, e
 // GetEndpointByID returns an endpoint with decrypted secrets for internal operations.
 func (s *Store) GetEndpointByID(ctx context.Context, id int64) (Endpoint, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
+		SELECT id, portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
 		       custom_headers_json, pgp_private_key_enc, pgp_passphrase_enc,
 		       retention_days, heartbeat_retention_days, store_raw_on_error,
 		       created_at, updated_at
@@ -256,6 +502,12 @@ func (s *Store) GetEndpointByID(ctx context.Context, id int64) (Endpoint, error)
 
 // CreateEndpoint persists a new endpoint configuration.
 func (s *Store) CreateEndpoint(ctx context.Context, ep Endpoint) (Endpoint, error) {
+	if strings.TrimSpace(ep.Portal) == "" {
+		ep.Portal = "Default"
+	}
+	if strings.TrimSpace(ep.Environment) == "" {
+		ep.Environment = "Production"
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	apiKeyEnc, err := s.box.Seal(ep.APIKey)
 	if err != nil {
@@ -280,13 +532,13 @@ func (s *Store) CreateEndpoint(ctx context.Context, ep Endpoint) (Endpoint, erro
 
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO endpoints (
-			name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
+			portal, environment, name, slug, enabled, api_key_enc, hmac_secret_enc, hmac_required,
 			custom_headers_json, pgp_private_key_enc, pgp_passphrase_enc,
 			retention_days, heartbeat_retention_days, store_raw_on_error,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		ep.Name, ep.Slug, boolToInt(ep.Enabled), apiKeyEnc, hmacEnc, boolToInt(ep.HMACRequired),
+		ep.Portal, ep.Environment, ep.Name, ep.Slug, boolToInt(ep.Enabled), apiKeyEnc, hmacEnc, boolToInt(ep.HMACRequired),
 		headersJSON, pgpKeyEnc, pgpPassEnc,
 		ep.RetentionDays, ep.HeartbeatRetentionDays, boolToInt(ep.StoreRawOnError),
 		now, now,
@@ -307,6 +559,8 @@ func (s *Store) CreateEndpoint(ctx context.Context, ep Endpoint) (Endpoint, erro
 
 // EndpointPatch specifies updates to an endpoint; nil secret fields preserve existing values.
 type EndpointPatch struct {
+	Portal                 string
+	Environment            string
 	Name                   string
 	Slug                   string
 	Enabled                bool
@@ -330,6 +584,13 @@ func (s *Store) UpdateEndpoint(ctx context.Context, id int64, p EndpointPatch) (
 	existing, err := s.GetEndpointByID(ctx, id)
 	if err != nil {
 		return Endpoint{}, err
+	}
+
+	if strings.TrimSpace(p.Portal) == "" {
+		p.Portal = "Default"
+	}
+	if strings.TrimSpace(p.Environment) == "" {
+		p.Environment = "Production"
 	}
 
 	apiKey := resolveSecretPatch(existing.APIKey, p.APIKey, p.ClearAPIKey)
@@ -361,16 +622,18 @@ func (s *Store) UpdateEndpoint(ctx context.Context, id int64, p EndpointPatch) (
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE endpoints
-		SET name = ?, slug = ?, enabled = ?, api_key_enc = ?, hmac_secret_enc = ?,
-		    hmac_required = ?, custom_headers_json = ?, pgp_private_key_enc = ?,
-		    pgp_passphrase_enc = ?, retention_days = ?, heartbeat_retention_days = ?,
-		    store_raw_on_error = ?, updated_at = ?
+		SET portal = ?, environment = ?, name = ?, slug = ?, enabled = ?,
+		    api_key_enc = ?, hmac_secret_enc = ?, hmac_required = ?,
+		    custom_headers_json = ?, pgp_private_key_enc = ?, pgp_passphrase_enc = ?,
+		    retention_days = ?, heartbeat_retention_days = ?, store_raw_on_error = ?,
+		    updated_at = ?
 		WHERE id = ?
 	`,
-		p.Name, p.Slug, boolToInt(p.Enabled), apiKeyEnc, hmacEnc,
-		boolToInt(p.HMACRequired), headersJSON, pgpKeyEnc,
-		pgpPassEnc, p.RetentionDays, p.HeartbeatRetentionDays,
-		boolToInt(p.StoreRawOnError), now, id,
+		p.Portal, p.Environment, p.Name, p.Slug, boolToInt(p.Enabled),
+		apiKeyEnc, hmacEnc, boolToInt(p.HMACRequired),
+		headersJSON, pgpKeyEnc, pgpPassEnc,
+		p.RetentionDays, p.HeartbeatRetentionDays, boolToInt(p.StoreRawOnError),
+		now, id,
 	)
 	if err != nil {
 		return Endpoint{}, err
@@ -432,6 +695,14 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]WebhookEvent, 
 	var conds []string
 	var args []any
 
+	if p := strings.TrimSpace(f.Portal); p != "" {
+		conds = append(conds, "lower(ep.portal) = lower(?)")
+		args = append(args, p)
+	}
+	if env := strings.TrimSpace(f.Environment); env != "" {
+		conds = append(conds, "lower(ep.environment) = lower(?)")
+		args = append(args, env)
+	}
 	if f.EndpointID > 0 {
 		conds = append(conds, "e.endpoint_id = ?")
 		args = append(args, f.EndpointID)
@@ -444,8 +715,8 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]WebhookEvent, 
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
 		like := "%" + q + "%"
-		conds = append(conds, "(e.payload_json LIKE ? OR e.subscription_id LIKE ? OR e.session_id LIKE ? OR e.event_cases LIKE ? OR e.error_message LIKE ?)")
-		args = append(args, like, like, like, like, like)
+		conds = append(conds, "(e.payload_json LIKE ? OR e.subscription_id LIKE ? OR e.session_id LIKE ? OR e.event_cases LIKE ? OR e.error_message LIKE ? OR ep.portal LIKE ? OR ep.environment LIKE ? OR ep.name LIKE ?)")
+		args = append(args, like, like, like, like, like, like, like, like)
 	}
 
 	where := ""
@@ -454,13 +725,18 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]WebhookEvent, 
 	}
 
 	var total int64
-	countSQL := "SELECT COUNT(*) FROM webhook_events e " + where
+	countSQL := `
+		SELECT COUNT(*)
+		FROM webhook_events e
+		JOIN endpoints ep ON ep.id = e.endpoint_id
+		` + where
 	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	querySQL := `
-		SELECT e.id, e.endpoint_id, ep.name, ep.slug, e.received_at, e.kind, e.status_code,
+		SELECT e.id, e.endpoint_id, ep.portal, ep.environment, ep.name, ep.slug,
+		       e.received_at, e.kind, e.status_code,
 		       e.error_message, e.subscription_id, e.session_id, e.attempt_number, e.record_count,
 		       e.event_cases, e.was_encrypted, e.was_compressed, e.pgp_key_name,
 		       e.headers_json, e.payload_json, e.raw_size_bytes, e.decoded_size_bytes
@@ -491,7 +767,8 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]WebhookEvent, 
 // GetEvent returns a single event by ID.
 func (s *Store) GetEvent(ctx context.Context, id int64) (WebhookEvent, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT e.id, e.endpoint_id, ep.name, ep.slug, e.received_at, e.kind, e.status_code,
+		SELECT e.id, e.endpoint_id, ep.portal, ep.environment, ep.name, ep.slug,
+		       e.received_at, e.kind, e.status_code,
 		       e.error_message, e.subscription_id, e.session_id, e.attempt_number, e.record_count,
 		       e.event_cases, e.was_encrypted, e.was_compressed, e.pgp_key_name,
 		       e.headers_json, e.payload_json, e.raw_size_bytes, e.decoded_size_bytes
@@ -517,6 +794,81 @@ func (s *Store) DeleteEvent(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// InsertAuditLog records an admin action with actor and timestamp.
+func (s *Store) InsertAuditLog(ctx context.Context, entry AuditLog) error {
+	if entry.OccurredAt.IsZero() {
+		entry.OccurredAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO audit_logs (
+			occurred_at, actor_id, actor_email, action,
+			target_type, target_id, target_label, details
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		entry.OccurredAt.UTC().Format(time.RFC3339Nano),
+		entry.ActorID, entry.ActorEmail, entry.Action,
+		entry.TargetType, entry.TargetID, entry.TargetLabel, entry.Details,
+	)
+	return err
+}
+
+// ListAuditLogs returns recent audit log entries matching filter criteria.
+func (s *Store) ListAuditLogs(ctx context.Context, f AuditFilter) ([]AuditLog, int64, error) {
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+
+	var conds []string
+	var args []any
+	if act := strings.TrimSpace(f.Action); act != "" {
+		conds = append(conds, "action = ?")
+		args = append(args, act)
+	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		like := "%" + q + "%"
+		conds = append(conds, "(actor_email LIKE ? OR actor_id LIKE ? OR action LIKE ? OR target_label LIKE ? OR details LIKE ?)")
+		args = append(args, like, like, like, like, like)
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_logs "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	qArgs := append(append([]any{}, args...), f.Limit, f.Offset)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, occurred_at, actor_id, actor_email, action, target_type, target_id, target_label, details
+		FROM audit_logs
+		`+where+`
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT ? OFFSET ?
+	`, qArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var items []AuditLog
+	for rows.Next() {
+		var a AuditLog
+		var occStr string
+		if err := rows.Scan(&a.ID, &occStr, &a.ActorID, &a.ActorEmail, &a.Action, &a.TargetType, &a.TargetID, &a.TargetLabel, &a.Details); err != nil {
+			return nil, 0, err
+		}
+		a.OccurredAt, _ = time.Parse(time.RFC3339Nano, occStr)
+		items = append(items, a)
+	}
+	return items, total, rows.Err()
 }
 
 // GetRetentionSettings returns stored global retention settings or defaults.
@@ -634,6 +986,9 @@ func (s *Store) GetStats(ctx context.Context, dbPath string) (Stats, error) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM endpoints`).Scan(&st.EndpointCount); err != nil {
 		return st, err
 	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`).Scan(&st.AuditLogCount); err != nil {
+		return st, err
+	}
 	if info, err := os.Stat(dbPath); err == nil {
 		st.DBSizeBytes = info.Size()
 	}
@@ -652,7 +1007,7 @@ func scanEndpointRaw(sc scanner) (Endpoint, string, string, string, string, erro
 	var createdStr, updatedStr string
 
 	err := sc.Scan(
-		&ep.ID, &ep.Name, &ep.Slug, &enabledInt,
+		&ep.ID, &ep.Portal, &ep.Environment, &ep.Name, &ep.Slug, &enabledInt,
 		&apiEnc, &hmacEnc, &hmacReqInt,
 		&headersJSON, &pgpKeyEnc, &pgpPassEnc,
 		&retDays, &hbRetDays, &storeRawInt,
@@ -734,8 +1089,8 @@ func scanEvent(sc scanner) (WebhookEvent, error) {
 	var receivedStr string
 	var encInt, compInt int
 	err := sc.Scan(
-		&ev.ID, &ev.EndpointID, &ev.EndpointName, &ev.EndpointSlug, &receivedStr,
-		&ev.Kind, &ev.StatusCode, &ev.ErrorMessage,
+		&ev.ID, &ev.EndpointID, &ev.EndpointPortal, &ev.EndpointEnvironment, &ev.EndpointName, &ev.EndpointSlug,
+		&receivedStr, &ev.Kind, &ev.StatusCode, &ev.ErrorMessage,
 		&ev.SubscriptionID, &ev.SessionID, &ev.AttemptNumber, &ev.RecordCount,
 		&ev.EventCases, &encInt, &compInt, &ev.PGPKeyName,
 		&ev.HeadersJSON, &ev.PayloadJSON, &ev.RawSizeBytes, &ev.DecodedSizeBytes,

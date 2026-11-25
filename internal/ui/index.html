@@ -16,13 +16,12 @@
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="events">Events</button>
       <button class="tab" data-tab="endpoints">Endpoints</button>
+      <button class="tab" data-tab="audit">Activity Log</button>
       <button class="tab" data-tab="settings">Retention &amp; Status</button>
     </nav>
     <div class="user-box" id="user-box">
-      <span id="user-label" class="muted"></span>
-      <form id="logout-form" method="post" hidden>
-        <button type="submit" class="btn btn-sm">Sign out</button>
-      </form>
+      <span id="user-label" class="muted" hidden></span>
+      <button type="button" id="btn-signout" class="btn btn-sm" hidden>Sign out</button>
     </div>
   </header>
 
@@ -31,11 +30,20 @@
 
     <!-- Events Tab -->
     <section id="tab-events" class="panel">
+      <div id="events-kpi" class="kpi-grid"></div>
+      <div id="events-scope-chips" class="chip-bar"></div>
+
       <div class="toolbar">
-        <select id="filter-endpoint">
+        <select id="filter-portal" aria-label="Filter by portal">
+          <option value="">All portals</option>
+        </select>
+        <select id="filter-env" aria-label="Filter by environment">
+          <option value="">All environments</option>
+        </select>
+        <select id="filter-endpoint" aria-label="Filter by endpoint">
           <option value="">All endpoints</option>
         </select>
-        <select id="filter-kind">
+        <select id="filter-kind" aria-label="Filter by kind">
           <option value="">All non-heartbeats</option>
           <option value="event">Events only</option>
           <option value="heartbeat">Heartbeats</option>
@@ -45,7 +53,7 @@
         <label class="checkbox-inline">
           <input type="checkbox" id="filter-heartbeats"> Include heartbeats
         </label>
-        <input type="search" id="filter-query" placeholder="Search payload, subscriptionId, case...">
+        <input type="search" id="filter-query" placeholder="Search payload, subscriptionId, case, portal...">
         <button id="btn-refresh-events" class="btn">Refresh</button>
       </div>
 
@@ -53,7 +61,8 @@
         <table>
           <thead>
             <tr>
-              <th>Received</th>
+              <th>Received (Local)</th>
+              <th>Portal / Env</th>
               <th>Endpoint</th>
               <th>Kind</th>
               <th>Event Cases</th>
@@ -78,131 +87,242 @@
 
     <!-- Endpoints Tab -->
     <section id="tab-endpoints" class="panel" hidden>
-      <div class="toolbar">
-        <h2 style="margin:0">Listening Endpoints</h2>
+      <div class="toolbar" style="justify-content:space-between">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <h2 style="margin:0">Endpoints by Portal &amp; Environment</h2>
+          <select id="ep-filter-portal" aria-label="Filter endpoints by portal">
+            <option value="">All portals</option>
+          </select>
+          <select id="ep-filter-env" aria-label="Filter endpoints by environment">
+            <option value="">All environments</option>
+          </select>
+        </div>
         <button id="btn-new-endpoint" class="btn btn-primary">+ New Endpoint</button>
       </div>
-      <div id="endpoints-list" class="cards"></div>
+
+      <div id="endpoints-tree" class="portal-tree"></div>
 
       <form id="endpoint-form" class="card form-card" hidden>
-        <h3 id="endpoint-form-title">New Endpoint</h3>
+        <div class="modal-head" style="margin-top:0">
+          <div>
+            <h3 id="endpoint-form-title" style="margin:0">New Webhook Endpoint</h3>
+            <p class="muted" style="margin:2px 0 0">Configure where Cornerstone sends webhooks and how Observer verifies and decrypts them.</p>
+          </div>
+          <button type="button" id="btn-cancel-endpoint-top" class="btn btn-sm">Close</button>
+        </div>
         <input type="hidden" id="ep-id">
 
-        <div class="grid-2">
-          <label>Name
-            <input type="text" id="ep-name" required placeholder="Training Production">
-          </label>
-          <label>Slug (URL: <code>/hooks/&lt;slug&gt;</code>)
-            <input type="text" id="ep-slug" required pattern="[a-z0-9][a-z0-9_-]{0,63}" placeholder="training">
-          </label>
-        </div>
-
-        <div class="grid-2">
-          <label class="checkbox-inline">
-            <input type="checkbox" id="ep-enabled" checked> Endpoint enabled
-          </label>
-          <label class="checkbox-inline">
-            <input type="checkbox" id="ep-hmac-required" checked> Require HMAC-SHA256 signature
-          </label>
-        </div>
-
-        <div class="grid-2">
-          <label>Expected <code>x-api-key</code> <span id="ep-apikey-status" class="muted"></span>
-            <input type="password" id="ep-apikey" autocomplete="new-password" placeholder="Optional CSOD API key">
-            <label class="checkbox-inline small-check" id="ep-clear-apikey-wrap" hidden>
-              <input type="checkbox" id="ep-clear-apikey"> Clear existing API key
+        <!-- Step 1 -->
+        <fieldset class="step-box">
+          <legend>1. Portal, Environment &amp; Listener URL</legend>
+          <div class="grid-2">
+            <label>Client Portal
+              <input type="text" id="ep-portal" list="portal-suggestions" required placeholder="e.g. Acme Corp">
+              <datalist id="portal-suggestions"></datalist>
+              <span class="hint">Group endpoints by customer or Cornerstone portal name.</span>
             </label>
-          </label>
-          <label>HMAC Secret <span id="ep-hmac-status" class="muted"></span>
-            <input type="password" id="ep-hmac" autocomplete="new-password" placeholder="Base64 or plain shared secret">
-            <label class="checkbox-inline small-check" id="ep-clear-hmac-wrap" hidden>
-              <input type="checkbox" id="ep-clear-hmac"> Clear existing HMAC secret
+            <label>Environment
+              <div style="display:flex;gap:8px">
+                <select id="ep-env-select">
+                  <option value="Production">Production</option>
+                  <option value="Pilot">Pilot</option>
+                  <option value="Stage">Stage</option>
+                  <option value="Sandbox">Sandbox</option>
+                  <option value="__custom__">Custom...</option>
+                </select>
+                <input type="text" id="ep-env-custom" placeholder="Custom env name" hidden>
+              </div>
+              <span class="hint">Separate Production, Pilot, Stage, or Sandbox traffic cleanly.</span>
             </label>
+          </div>
+
+          <div class="grid-2">
+            <label>Endpoint Name
+              <input type="text" id="ep-name" required placeholder="e.g. Training &amp; Transcript Events">
+              <span class="hint">Friendly label shown in dashboards and logs.</span>
+            </label>
+            <label>Listener Slug
+              <input type="text" id="ep-slug" required pattern="[a-z0-9][a-z0-9_-]{0,63}" placeholder="acme-prod-training">
+              <span class="hint">Cornerstone Webhook URL: <code id="ep-url-preview">/hooks/...</code></span>
+            </label>
+          </div>
+
+          <label class="checkbox-inline">
+            <input type="checkbox" id="ep-enabled" checked> Endpoint is active (accept incoming webhooks)
           </label>
-        </div>
+        </fieldset>
 
-        <label>Custom Headers (JSON object, max 4 pairs, keys must start with <code>x-</code>)
-          <textarea id="ep-custom-headers" rows="3" placeholder='{"x-csod-authentication": "my-token"}'></textarea>
-        </label>
+        <!-- Step 2 -->
+        <fieldset class="step-box">
+          <legend>2. Cornerstone Security &amp; Headers</legend>
+          <label class="checkbox-inline" style="margin-bottom:10px">
+            <input type="checkbox" id="ep-hmac-required" checked> Require HMAC-SHA256 signature verification (recommended)
+          </label>
 
-        <div class="grid-2">
-          <div>
-            <label>PGP Private Key (ASCII-armored) <span id="ep-pgp-status" class="muted"></span>
-              <textarea id="ep-pgp-key" rows="5" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
-              <input type="file" id="ep-pgp-file" accept=".asc,.pgp,.txt">
-              <label class="checkbox-inline small-check" id="ep-clear-pgp-wrap" hidden>
-                <input type="checkbox" id="ep-clear-pgp"> Clear existing PGP private key
+          <div class="grid-2">
+            <label>HMAC Secret Key <span id="ep-hmac-status" class="muted"></span>
+              <input type="password" id="ep-hmac" autocomplete="new-password" placeholder="Secret key from Cornerstone endpoint">
+              <span class="hint">Used to verify incoming event signatures and respond to Token Challenges (<code>x-challenge-sha256</code>).</span>
+              <label class="checkbox-inline small-check" id="ep-clear-hmac-wrap" hidden>
+                <input type="checkbox" id="ep-clear-hmac"> Remove saved HMAC secret
               </label>
             </label>
+            <label>Expected <code>x-api-key</code> <span id="ep-apikey-status" class="muted"></span>
+              <input type="password" id="ep-apikey" autocomplete="new-password" placeholder="Optional API key from Cornerstone">
+              <span class="hint">Leave blank unless you want Observer to enforce a specific <code>x-api-key</code> header.</span>
+              <label class="checkbox-inline small-check" id="ep-clear-apikey-wrap" hidden>
+                <input type="checkbox" id="ep-clear-apikey"> Remove saved API key
+              </label>
+            </label>
+          </div>
 
-            <div class="pgp-gen-box">
-              <div class="modal-subhead" style="margin-top:0">
-                <strong>Generate New PGP Keypair</strong>
-                <button type="button" id="btn-gen-pgp" class="btn btn-sm">Generate Keypair</button>
+          <div class="sub-box">
+            <div class="modal-subhead" style="margin-top:0">
+              <div>
+                <strong>Custom Verification Headers</strong>
+                <span class="muted"> (Optional, max 4 pairs starting with <code>x-</code>)</span>
               </div>
-              <div class="grid-2">
-                <label>Key Name
-                  <input type="text" id="pgp-gen-name" placeholder="Observer CSOD Webhook">
-                </label>
-                <label>Key Email
-                  <input type="email" id="pgp-gen-email" placeholder="webhooks@observer.local">
-                </label>
-              </div>
-              <div class="grid-2">
-                <label>RSA Size
-                  <select id="pgp-gen-bits">
-                    <option value="4096" selected>4096 bits (Recommended)</option>
-                    <option value="2048">2048 bits</option>
-                  </select>
-                </label>
-                <label>Validity
-                  <select id="pgp-gen-days">
-                    <option value="365">1 year</option>
-                    <option value="730" selected>2 years (Recommended)</option>
-                    <option value="1825">5 years</option>
-                  </select>
-                </label>
-              </div>
+              <button type="button" id="btn-add-header" class="btn btn-sm">+ Add Header</button>
+            </div>
+            <div id="custom-headers-rows" class="header-rows"></div>
+          </div>
+        </fieldset>
+
+        <!-- Step 3 -->
+        <fieldset class="step-box">
+          <legend>3. Payload Decryption (PGP)</legend>
+          <p class="hint" style="margin-top:0">Required by Cornerstone for Employee webhooks; optional for other event categories.</p>
+
+          <div class="pgp-gen-box">
+            <div class="modal-subhead" style="margin-top:0">
+              <strong>Option A: Generate a New PGP Keypair in Observer</strong>
+              <button type="button" id="btn-gen-pgp" class="btn btn-sm btn-primary">Generate Keypair</button>
+            </div>
+            <div class="grid-3">
+              <label>Key Name
+                <input type="text" id="pgp-gen-name" placeholder="Observer CSOD Webhook">
+              </label>
+              <label>Key Email
+                <input type="email" id="pgp-gen-email" placeholder="webhooks@observer.local">
+              </label>
+              <label>RSA Size
+                <select id="pgp-gen-bits">
+                  <option value="4096" selected>4096 bits (Recommended)</option>
+                  <option value="2048">2048 bits</option>
+                </select>
+              </label>
+            </div>
+            <div class="grid-2">
+              <label>Validity Period
+                <select id="pgp-gen-days">
+                  <option value="365">1 year</option>
+                  <option value="730" selected>2 years (Recommended)</option>
+                  <option value="1825">5 years</option>
+                </select>
+              </label>
               <label>Passphrase (optional)
-                <input type="password" id="pgp-gen-pass" autocomplete="new-password" placeholder="Uses passphrase if set">
+                <input type="password" id="pgp-gen-pass" autocomplete="new-password" placeholder="Optional key protection passphrase">
               </label>
-              <div id="pgp-pub-output" hidden>
-                <div class="modal-subhead">
-                  <span class="muted" id="pgp-pub-meta"></span>
-                  <div style="display:flex;gap:6px">
-                    <button type="button" id="btn-copy-pub" class="btn btn-sm">Copy Public Key</button>
-                    <button type="button" id="btn-dl-pub" class="btn btn-sm">Download .asc</button>
-                  </div>
+            </div>
+            <div id="pgp-pub-output" hidden>
+              <div class="modal-subhead">
+                <span class="muted" id="pgp-pub-meta"></span>
+                <div style="display:flex;gap:6px">
+                  <button type="button" id="btn-copy-pub" class="btn btn-sm">Copy Public Key</button>
+                  <button type="button" id="btn-dl-pub" class="btn btn-sm">Download .asc</button>
                 </div>
-                <textarea id="pgp-pub-text" rows="4" readonly></textarea>
-                <p class="muted" style="margin:6px 0 0">Upload this public key in Cornerstone under Admin &gt; Tools &gt; Edge &gt; Imports and Feeds &gt; Key Management &gt; Report Encryption Keys, then click Save Endpoint.</p>
               </div>
+              <textarea id="pgp-pub-text" rows="4" readonly></textarea>
+              <p class="hint" style="margin:6px 0 0">Upload this public key in Cornerstone under <strong>Admin &gt; Tools &gt; Edge &gt; Imports and Feeds &gt; Key Management &gt; Report Encryption Keys</strong>, then click <strong>Save Endpoint</strong> below.</p>
             </div>
           </div>
-          <div>
-            <label>PGP Passphrase <span id="ep-pgppass-status" class="muted"></span>
-              <input type="password" id="ep-pgp-pass" autocomplete="new-password" placeholder="Optional key passphrase">
-              <label class="checkbox-inline small-check" id="ep-clear-pgppass-wrap" hidden>
-                <input type="checkbox" id="ep-clear-pgppass"> Clear existing passphrase
+
+          <div class="grid-2">
+            <label>Option B: Private Key (ASCII-armored) <span id="ep-pgp-status" class="muted"></span>
+              <textarea id="ep-pgp-key" rows="4" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
+              <input type="file" id="ep-pgp-file" accept=".asc,.pgp,.txt">
+              <label class="checkbox-inline small-check" id="ep-clear-pgp-wrap" hidden>
+                <input type="checkbox" id="ep-clear-pgp"> Remove saved PGP private key
               </label>
             </label>
+            <label>PGP Passphrase <span id="ep-pgppass-status" class="muted"></span>
+              <input type="password" id="ep-pgp-pass" autocomplete="new-password" placeholder="Passphrase (if key is encrypted)">
+              <span class="hint">Automatically filled when generating a keypair with a passphrase above.</span>
+              <label class="checkbox-inline small-check" id="ep-clear-pgppass-wrap" hidden>
+                <input type="checkbox" id="ep-clear-pgppass"> Remove saved passphrase
+              </label>
+            </label>
+          </div>
+        </fieldset>
+
+        <!-- Step 4 (Advanced) -->
+        <details class="step-box">
+          <summary><strong>4. Advanced: Retention Overrides &amp; Error Handling</strong></summary>
+          <div class="grid-2" style="margin-top:12px">
             <label>Event Retention Override (days, blank = global)
               <input type="number" id="ep-ret-days" min="1" placeholder="Global default">
             </label>
             <label>Heartbeat Retention Override (days, blank = global)
               <input type="number" id="ep-hb-days" min="1" placeholder="Global default">
             </label>
-            <label class="checkbox-inline">
-              <input type="checkbox" id="ep-store-raw-err"> Acknowledge 200 OK even on decode error (disables CSOD retry)
-            </label>
           </div>
-        </div>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="ep-store-raw-err"> Acknowledge HTTP 200 even on decode error (disables Cornerstone automatic retries)
+          </label>
+        </details>
 
         <div class="form-actions">
           <button type="button" id="btn-cancel-endpoint" class="btn">Cancel</button>
           <button type="submit" class="btn btn-primary">Save Endpoint</button>
         </div>
       </form>
+    </section>
+
+    <!-- Activity / Audit Log Tab -->
+    <section id="tab-audit" class="panel" hidden>
+      <div class="toolbar" style="justify-content:space-between">
+        <div>
+          <h2 style="margin:0">Activity Log</h2>
+          <p class="muted" id="audit-tz-note" style="margin:2px 0 0"></p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="audit-filter-action">
+            <option value="">All operations</option>
+            <option value="endpoint.create">Endpoint created</option>
+            <option value="endpoint.update">Endpoint updated</option>
+            <option value="endpoint.delete">Endpoint deleted</option>
+            <option value="pgp.generate">PGP key generated</option>
+            <option value="event.delete">Event deleted</option>
+            <option value="settings.update">Retention updated</option>
+            <option value="retention.purge">Manual purge</option>
+          </select>
+          <input type="search" id="audit-filter-query" placeholder="Search user, portal, target...">
+          <button id="btn-refresh-audit" class="btn">Refresh</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time (Local)</th>
+              <th>User</th>
+              <th>Operation</th>
+              <th>Target</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="audit-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <span id="audit-count" class="muted"></span>
+        <div>
+          <button id="audit-prev" class="btn btn-sm">Prev</button>
+          <button id="audit-next" class="btn btn-sm">Next</button>
+        </div>
+      </div>
     </section>
 
     <!-- Settings Tab -->

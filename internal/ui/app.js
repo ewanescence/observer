@@ -1,9 +1,14 @@
 (() => {
+  const PRESET_ENVS = ['Production', 'Pilot', 'Stage', 'Sandbox'];
   const state = {
     offset: 0,
     limit: 50,
+    auditOffset: 0,
+    auditLimit: 50,
+    portals: [],
     endpoints: [],
-    currentPayload: ''
+    currentPayload: '',
+    slugTouched: false
   };
 
   const $ = (id) => document.getElementById(id);
@@ -29,7 +34,7 @@
     el.textContent = msg;
     el.className = isErr ? 'toast error' : 'toast';
     el.hidden = false;
-    setTimeout(() => { el.hidden = true; }, 4000);
+    setTimeout(() => { el.hidden = true; }, 4500);
   }
 
   function fmtDate(iso) {
@@ -47,151 +52,515 @@
     return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
   }
 
+  function localTimeZoneLabel() {
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const offsetMin = -new Date().getTimezoneOffset();
+      const sign = offsetMin >= 0 ? '+' : '-';
+      const absH = String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, '0');
+      const absM = String(Math.abs(offsetMin) % 60).padStart(2, '0');
+      return `${tz || 'Local'} (UTC${sign}${absH}:${absM})`;
+    } catch {
+      return 'Browser local timezone';
+    }
+  }
+
+  function slugify(parts) {
+    return parts
+      .map((p) => String(p || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''))
+      .filter(Boolean)
+      .join('-')
+      .slice(0, 64);
+  }
+
   // Tabs
   document.querySelectorAll('.tab').forEach((btn) => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
       const target = btn.dataset.tab;
-      ['events', 'endpoints', 'settings'].forEach((name) => {
+      ['events', 'endpoints', 'audit', 'settings'].forEach((name) => {
         $(`tab-${name}`).hidden = name !== target;
       });
-      if (target === 'events') loadEvents();
-      if (target === 'endpoints') loadEndpoints();
+      if (target === 'events') loadSummary().then(loadEvents);
+      if (target === 'endpoints') loadSummary();
+      if (target === 'audit') loadAudit();
       if (target === 'settings') loadSettings();
     });
   });
 
+  // Identity & Sign Out (handles Autentico POST 204 No Content properly)
   async function loadMe() {
     try {
       const me = await api('/api/me');
-      $('user-label').textContent = me.email || me.userId || '';
+      const label = $('user-label');
+      if (me.email) {
+        label.textContent = me.email;
+        label.hidden = false;
+      } else {
+        label.hidden = true;
+      }
       if (me.logoutPath) {
-        const form = $('logout-form');
-        form.action = me.logoutPath;
-        form.hidden = false;
-      }
-    } catch (e) {
-      showToast(e.message, true);
-    }
-  }
-
-  async function loadEndpoints() {
-    try {
-      const eps = await api('/api/endpoints');
-      state.endpoints = eps;
-
-      const sel = $('filter-endpoint');
-      const prev = sel.value;
-      sel.replaceChildren(new Option('All endpoints', ''));
-      eps.forEach((ep) => sel.appendChild(new Option(`${ep.name} (/hooks/${ep.slug})`, String(ep.id))));
-      sel.value = prev;
-
-      const list = $('endpoints-list');
-      list.replaceChildren();
-      if (eps.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'card muted';
-        empty.textContent = 'No endpoints configured yet. Click "+ New Endpoint" to create one.';
-        list.appendChild(empty);
-        return;
-      }
-
-      eps.forEach((ep) => {
-        const card = document.createElement('div');
-        card.className = 'card';
-
-        const header = document.createElement('div');
-        header.className = 'toolbar';
-        header.style.justifyContent = 'space-between';
-        header.style.marginBottom = '8px';
-
-        const titleWrap = document.createElement('div');
-        const strong = document.createElement('strong');
-        strong.textContent = ep.name;
-        const badge = document.createElement('span');
-        badge.className = `badge ${ep.enabled ? 'badge-event' : 'badge-error'}`;
-        badge.style.marginLeft = '8px';
-        badge.textContent = ep.enabled ? 'enabled' : 'disabled';
-        titleWrap.append(strong, badge);
-
-        const actions = document.createElement('div');
-        actions.style.display = 'flex';
-        actions.style.gap = '6px';
-
-        const hookURL = `${location.origin}/hooks/${ep.slug}`;
-        const copyBtn = document.createElement('button');
-        copyBtn.className = 'btn btn-sm';
-        copyBtn.textContent = 'Copy URL';
-        copyBtn.onclick = () => {
-          navigator.clipboard?.writeText(hookURL);
-          showToast(`Copied ${hookURL}`);
-        };
-
-        const editBtn = document.createElement('button');
-        editBtn.className = 'btn btn-sm';
-        editBtn.textContent = 'Edit';
-        editBtn.onclick = () => openEndpointForm(ep);
-
-        const delBtn = document.createElement('button');
-        delBtn.className = 'btn btn-sm btn-danger';
-        delBtn.textContent = 'Delete';
-        delBtn.onclick = async () => {
-          if (!confirm(`Delete endpoint "${ep.name}" and all its stored events?`)) return;
+        const btn = $('btn-signout');
+        btn.hidden = false;
+        btn.onclick = async () => {
+          btn.disabled = true;
           try {
-            await api(`/api/endpoints/${ep.id}`, { method: 'DELETE' });
-            showToast('Endpoint deleted');
-            loadEndpoints();
-          } catch (e) { showToast(e.message, true); }
+            const resp = await fetch(me.logoutPath, {
+              method: 'POST',
+              credentials: 'same-origin'
+            });
+            if (resp.ok || resp.status === 204) {
+              window.location.href = '/';
+              return;
+            }
+            showToast(`Sign out failed (HTTP ${resp.status})`, true);
+          } catch (err) {
+            showToast(`Sign out failed: ${err.message}`, true);
+          } finally {
+            btn.disabled = false;
+          }
         };
-
-        actions.append(copyBtn, editBtn, delBtn);
-        header.append(titleWrap, actions);
-
-        const meta = document.createElement('div');
-        meta.className = 'muted';
-        const flags = [
-          `URL: ${hookURL}`,
-          `API Key: ${ep.hasApiKey ? 'set' : 'none'}`,
-          `HMAC: ${ep.hmacRequired ? (ep.hasHmacSecret ? 'required' : 'missing secret!') : 'optional'}`,
-          `PGP: ${ep.hasPgpPrivateKey ? 'configured' : 'none'}`,
-          `Custom Headers: ${Object.keys(ep.customHeaders || {}).length}`
-        ];
-        meta.textContent = flags.join(' · ');
-
-        card.append(header, meta);
-        list.appendChild(card);
-      });
+      }
     } catch (e) {
       showToast(e.message, true);
     }
   }
 
-  function openEndpointForm(ep = null) {
+  // Portal > Environment > Endpoint Summary & Cascading Selectors
+  async function loadSummary() {
+    try {
+      const res = await api('/api/summary');
+      state.portals = res.portals || [];
+      state.endpoints = [];
+      state.portals.forEach((p) => {
+        (p.environments || []).forEach((env) => {
+          (env.endpoints || []).forEach((ep) => state.endpoints.push(ep));
+        });
+      });
+
+      populatePortalSuggestions();
+      syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
+      syncCascadingFilters('ep-filter-portal', 'ep-filter-env', null, false);
+      renderEventsSummary();
+      renderEndpointsTree();
+    } catch (e) {
+      showToast(e.message, true);
+    }
+  }
+
+  function populatePortalSuggestions() {
+    const dl = $('portal-suggestions');
+    dl.replaceChildren();
+    state.portals.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p.portal;
+      dl.appendChild(opt);
+    });
+  }
+
+  function syncCascadingFilters(portalSelId, envSelId, epSelId, withEndpoint) {
+    const pSel = $(portalSelId);
+    const eSel = $(envSelId);
+    const prevP = pSel.value;
+    const prevE = eSel.value;
+
+    pSel.replaceChildren(new Option('All portals', ''));
+    state.portals.forEach((p) => pSel.appendChild(new Option(p.portal, p.portal)));
+    if (state.portals.some((p) => p.portal === prevP)) pSel.value = prevP;
+
+    const activeP = pSel.value;
+    const envSet = new Set();
+    state.portals.forEach((p) => {
+      if (!activeP || p.portal === activeP) {
+        (p.environments || []).forEach((e) => envSet.add(e.environment));
+      }
+    });
+    eSel.replaceChildren(new Option('All environments', ''));
+    Array.from(envSet).forEach((env) => eSel.appendChild(new Option(env, env)));
+    if (envSet.has(prevE)) eSel.value = prevE;
+
+    if (withEndpoint && epSelId) {
+      const epSel = $(epSelId);
+      const prevEp = epSel.value;
+      const activeE = eSel.value;
+      epSel.replaceChildren(new Option('All endpoints', ''));
+      const matching = state.endpoints.filter((ep) =>
+        (!activeP || ep.portal === activeP) && (!activeE || ep.environment === activeE)
+      );
+      matching.forEach((ep) => {
+        epSel.appendChild(new Option(`${ep.name} (${ep.portal} · ${ep.environment})`, String(ep.id)));
+      });
+      if (matching.some((ep) => String(ep.id) === prevEp)) epSel.value = prevEp;
+    }
+  }
+
+  function computeFilteredSummary() {
+    const pVal = $('filter-portal').value;
+    const eVal = $('filter-env').value;
+    const epVal = $('filter-endpoint').value;
+
+    const matching = state.endpoints.filter((ep) =>
+      (!pVal || ep.portal === pVal) &&
+      (!eVal || ep.environment === eVal) &&
+      (!epVal || String(ep.id) === epVal)
+    );
+    return matching.reduce((acc, ep) => {
+      acc.events += ep.eventCount || 0;
+      acc.heartbeats += ep.heartbeatCount || 0;
+      acc.errors += ep.errorCount || 0;
+      acc.endpoints += 1;
+      if (ep.enabled) acc.enabled += 1;
+      return acc;
+    }, { events: 0, heartbeats: 0, errors: 0, endpoints: 0, enabled: 0 });
+  }
+
+  function renderEventsSummary() {
+    const totals = computeFilteredSummary();
+    const kpi = $('events-kpi');
+    kpi.replaceChildren();
+
+    [
+      ['Events', totals.events, ''],
+      ['Errors', totals.errors, totals.errors > 0 ? 'err' : ''],
+      ['Heartbeats', totals.heartbeats, ''],
+      ['Active Endpoints', `${totals.enabled} / ${totals.endpoints}`, '']
+    ].forEach(([lbl, val, cls]) => {
+      const card = document.createElement('div');
+      card.className = 'kpi-card';
+      const l = document.createElement('div');
+      l.className = 'kpi-label';
+      l.textContent = lbl;
+      const v = document.createElement('div');
+      v.className = `kpi-value ${cls}`.trim();
+      v.textContent = String(val);
+      card.append(l, v);
+      kpi.appendChild(card);
+    });
+
+    const chips = $('events-scope-chips');
+    chips.replaceChildren();
+    if (state.portals.length === 0) return;
+
+    const curP = $('filter-portal').value;
+    const curE = $('filter-env').value;
+
+    const allBtn = document.createElement('button');
+    allBtn.type = 'button';
+    allBtn.className = `chip ${!curP && !curE ? 'active' : ''}`;
+    allBtn.textContent = 'All Portals';
+    allBtn.onclick = () => {
+      $('filter-portal').value = '';
+      syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
+      $('filter-env').value = '';
+      $('filter-endpoint').value = '';
+      state.offset = 0;
+      renderEventsSummary();
+      loadEvents();
+    };
+    chips.appendChild(allBtn);
+
+    state.portals.forEach((p) => {
+      (p.environments || []).forEach((env) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        const isActive = curP === p.portal && curE === env.environment;
+        btn.className = `chip ${isActive ? 'active' : ''}`;
+        const errPart = env.errorCount > 0 ? ` · ${env.errorCount} err` : '';
+        btn.textContent = `${p.portal} › ${env.environment} (${env.eventCount}${errPart})`;
+        btn.onclick = () => {
+          $('filter-portal').value = p.portal;
+          syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
+          $('filter-env').value = env.environment;
+          syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
+          $('filter-endpoint').value = '';
+          state.offset = 0;
+          renderEventsSummary();
+          loadEvents();
+        };
+        chips.appendChild(btn);
+      });
+    });
+  }
+
+  // Endpoints Hierarchy View
+  function renderEndpointsTree() {
+    const tree = $('endpoints-tree');
+    tree.replaceChildren();
+
+    const pFilter = $('ep-filter-portal').value;
+    const eFilter = $('ep-filter-env').value;
+
+    const visiblePortals = state.portals.filter((p) => !pFilter || p.portal === pFilter);
+    if (visiblePortals.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'card muted';
+      empty.textContent = 'No endpoints configured yet. Click "+ New Endpoint" to create one.';
+      tree.appendChild(empty);
+      return;
+    }
+
+    visiblePortals.forEach((p) => {
+      const pEnvs = (p.environments || []).filter((e) => !eFilter || e.environment === eFilter);
+      if (pEnvs.length === 0) return;
+
+      const pGroup = document.createElement('div');
+      pGroup.className = 'portal-group';
+
+      const pHead = document.createElement('div');
+      pHead.className = 'portal-head';
+
+      const pLeft = document.createElement('div');
+      const pTitle = document.createElement('strong');
+      pTitle.textContent = p.portal;
+      const pStats = document.createElement('span');
+      pStats.className = 'muted';
+      pStats.style.marginLeft = '10px';
+      pStats.textContent = `${p.enabledCount}/${p.endpointCount} active · ${p.eventCount} events · ${p.errorCount} errors · ${p.heartbeatCount} heartbeats`;
+      pLeft.append(pTitle, pStats);
+
+      const pActions = document.createElement('div');
+      pActions.style.display = 'flex';
+      pActions.style.gap = '6px';
+
+      const viewEvBtn = document.createElement('button');
+      viewEvBtn.className = 'btn btn-sm';
+      viewEvBtn.textContent = 'View Events';
+      viewEvBtn.onclick = () => jumpToEventsScope(p.portal, '');
+
+      const addInPortalBtn = document.createElement('button');
+      addInPortalBtn.className = 'btn btn-sm';
+      addInPortalBtn.textContent = '+ Add Endpoint';
+      addInPortalBtn.onclick = () => openEndpointForm(null, p.portal, 'Production');
+
+      pActions.append(viewEvBtn, addInPortalBtn);
+      pHead.append(pLeft, pActions);
+      pGroup.appendChild(pHead);
+
+      pEnvs.forEach((env) => {
+        const envBox = document.createElement('div');
+        envBox.className = 'env-group';
+
+        const envHead = document.createElement('div');
+        envHead.className = 'env-head';
+
+        const envLeft = document.createElement('div');
+        const envBadge = document.createElement('span');
+        envBadge.className = 'badge badge-env';
+        envBadge.textContent = env.environment;
+        const envMeta = document.createElement('span');
+        envMeta.className = 'muted';
+        envMeta.style.marginLeft = '8px';
+        envMeta.textContent = `${env.endpointCount} endpoint(s) · ${env.eventCount} events · ${env.errorCount} errors · Last: ${fmtDate(env.lastReceivedAt)}`;
+        envLeft.append(envBadge, envMeta);
+
+        const envBtn = document.createElement('button');
+        envBtn.className = 'btn btn-sm';
+        envBtn.textContent = 'Filter Events';
+        envBtn.onclick = () => jumpToEventsScope(p.portal, env.environment);
+
+        envHead.append(envLeft, envBtn);
+        envBox.appendChild(envHead);
+
+        const epList = document.createElement('div');
+        epList.className = 'ep-list';
+
+        (env.endpoints || []).forEach((ep) => {
+          const row = document.createElement('div');
+          row.className = 'ep-row';
+
+          const info = document.createElement('div');
+          const nameEl = document.createElement('strong');
+          nameEl.textContent = ep.name;
+          const statusBadge = document.createElement('span');
+          statusBadge.className = `badge ${ep.enabled ? 'badge-event' : 'badge-error'}`;
+          statusBadge.style.marginLeft = '8px';
+          statusBadge.textContent = ep.enabled ? 'active' : 'disabled';
+
+          const hookURL = `${location.origin}/hooks/${ep.slug}`;
+          const sub = document.createElement('div');
+          sub.className = 'muted';
+          const secParts = [
+            ep.hmacRequired ? (ep.hasHmacSecret ? 'HMAC' : 'HMAC (missing secret!)') : 'HMAC off',
+            ep.hasApiKey ? 'API Key' : null,
+            ep.hasPgpPrivateKey ? 'PGP' : null,
+            Object.keys(ep.customHeaders || {}).length ? `${Object.keys(ep.customHeaders).length} custom hdr` : null
+          ].filter(Boolean);
+          sub.textContent = `${hookURL} · ${secParts.join(', ')} · ${ep.eventCount} events / ${ep.errorCount} err`;
+          info.append(nameEl, statusBadge, sub);
+
+          const btns = document.createElement('div');
+          btns.style.display = 'flex';
+          btns.style.gap = '6px';
+
+          const copyBtn = document.createElement('button');
+          copyBtn.className = 'btn btn-sm';
+          copyBtn.textContent = 'Copy URL';
+          copyBtn.onclick = () => {
+            navigator.clipboard?.writeText(hookURL);
+            showToast(`Copied ${hookURL}`);
+          };
+
+          const editBtn = document.createElement('button');
+          editBtn.className = 'btn btn-sm';
+          editBtn.textContent = 'Edit';
+          editBtn.onclick = () => openEndpointForm(ep);
+
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn btn-sm btn-danger';
+          delBtn.textContent = 'Delete';
+          delBtn.onclick = async () => {
+            if (!confirm(`Delete "${p.portal} › ${env.environment} › ${ep.name}" and all its stored events?`)) return;
+            try {
+              await api(`/api/endpoints/${ep.id}`, { method: 'DELETE' });
+              showToast('Endpoint deleted');
+              loadSummary();
+            } catch (e) { showToast(e.message, true); }
+          };
+
+          btns.append(copyBtn, editBtn, delBtn);
+          row.append(info, btns);
+          epList.appendChild(row);
+        });
+
+        envBox.appendChild(epList);
+        pGroup.appendChild(envBox);
+      });
+
+      tree.appendChild(pGroup);
+    });
+  }
+
+  function jumpToEventsScope(portal, env) {
+    document.querySelectorAll('.tab').forEach((b) => {
+      b.classList.toggle('active', b.dataset.tab === 'events');
+    });
+    ['events', 'endpoints', 'audit', 'settings'].forEach((name) => {
+      $(`tab-${name}`).hidden = name !== 'events';
+    });
+    $('filter-portal').value = portal || '';
+    syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
+    $('filter-env').value = env || '';
+    syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
+    $('filter-endpoint').value = '';
+    state.offset = 0;
+    renderEventsSummary();
+    loadEvents();
+  }
+
+  // Guided Endpoint Form helpers
+  function setFormEnv(envName) {
+    const val = envName || 'Production';
+    if (PRESET_ENVS.includes(val)) {
+      $('ep-env-select').value = val;
+      $('ep-env-custom').hidden = true;
+      $('ep-env-custom').value = '';
+    } else {
+      $('ep-env-select').value = '__custom__';
+      $('ep-env-custom').hidden = false;
+      $('ep-env-custom').value = val;
+    }
+  }
+
+  function getFormEnv() {
+    const sel = $('ep-env-select').value;
+    if (sel === '__custom__') {
+      return $('ep-env-custom').value.trim() || 'Production';
+    }
+    return sel;
+  }
+
+  function updateURLPreview() {
+    const slug = $('ep-slug').value.trim() || '<slug>';
+    $('ep-url-preview').textContent = `${location.origin}/hooks/${slug}`;
+  }
+
+  function addCustomHeaderRow(key = '', val = '') {
+    const container = $('custom-headers-rows');
+    if (container.children.length >= 4) {
+      return showToast('Cornerstone allows at most 4 custom headers', true);
+    }
+    const row = document.createElement('div');
+    row.className = 'header-row';
+
+    const kInput = document.createElement('input');
+    kInput.type = 'text';
+    kInput.placeholder = 'x-csod-authentication';
+    kInput.value = key;
+    kInput.className = 'hdr-key';
+
+    const vInput = document.createElement('input');
+    vInput.type = 'text';
+    vInput.placeholder = 'Expected header value';
+    vInput.value = val;
+    vInput.className = 'hdr-val';
+
+    const rmBtn = document.createElement('button');
+    rmBtn.type = 'button';
+    rmBtn.className = 'btn btn-sm btn-danger';
+    rmBtn.textContent = 'Remove';
+    rmBtn.onclick = () => row.remove();
+
+    row.append(kInput, vInput, rmBtn);
+    container.appendChild(row);
+  }
+
+  $('btn-add-header').addEventListener('click', () => addCustomHeaderRow());
+
+  $('ep-env-select').addEventListener('change', () => {
+    $('ep-env-custom').hidden = $('ep-env-select').value !== '__custom__';
+    maybeAutoSlug();
+  });
+  ['ep-portal', 'ep-env-custom', 'ep-name'].forEach((id) => {
+    $(id).addEventListener('input', maybeAutoSlug);
+  });
+  $('ep-slug').addEventListener('input', () => {
+    state.slugTouched = true;
+    updateURLPreview();
+  });
+
+  function maybeAutoSlug() {
+    if ($('ep-id').value || state.slugTouched) return;
+    const suggested = slugify([$('ep-portal').value, getFormEnv(), $('ep-name').value]);
+    $('ep-slug').value = suggested;
+    updateURLPreview();
+  }
+
+  function openEndpointForm(ep = null, defaultPortal = '', defaultEnv = 'Production') {
     const form = $('endpoint-form');
     form.hidden = false;
-    $('endpoint-form-title').textContent = ep ? `Edit Endpoint: ${ep.name}` : 'New Endpoint';
+    state.slugTouched = Boolean(ep);
+
+    $('endpoint-form-title').textContent = ep ? `Edit Endpoint: ${ep.name}` : 'New Webhook Endpoint';
     $('ep-id').value = ep ? ep.id : '';
+    $('ep-portal').value = ep ? ep.portal : defaultPortal;
+    setFormEnv(ep ? ep.environment : defaultEnv);
     $('ep-name').value = ep ? ep.name : '';
     $('ep-slug').value = ep ? ep.slug : '';
+    updateURLPreview();
+
     $('ep-enabled').checked = ep ? ep.enabled : true;
     $('ep-hmac-required').checked = ep ? ep.hmacRequired : true;
     $('ep-apikey').value = '';
     $('ep-hmac').value = '';
     $('ep-pgp-key').value = '';
     $('ep-pgp-pass').value = '';
-    $('ep-custom-headers').value = ep && ep.customHeaders && Object.keys(ep.customHeaders).length
-      ? JSON.stringify(ep.customHeaders, null, 2)
-      : '';
+
+    const hdrWrap = $('custom-headers-rows');
+    hdrWrap.replaceChildren();
+    if (ep && ep.customHeaders) {
+      Object.entries(ep.customHeaders).forEach(([k, v]) => addCustomHeaderRow(k, v));
+    }
+
     $('ep-ret-days').value = ep && ep.retentionDays ? ep.retentionDays : '';
     $('ep-hb-days').value = ep && ep.heartbeatRetentionDays ? ep.heartbeatRetentionDays : '';
     $('ep-store-raw-err').checked = ep ? ep.storeRawOnError : false;
 
     const isEdit = Boolean(ep);
-    $('ep-apikey-status').textContent = isEdit && ep.hasApiKey ? '(set — leave blank to keep)' : '';
-    $('ep-hmac-status').textContent = isEdit && ep.hasHmacSecret ? '(set — leave blank to keep)' : '';
-    $('ep-pgp-status').textContent = isEdit && ep.hasPgpPrivateKey ? '(set — leave blank to keep)' : '';
-    $('ep-pgppass-status').textContent = isEdit && ep.hasPgpPassphrase ? '(set — leave blank to keep)' : '';
+    $('ep-apikey-status').textContent = isEdit && ep.hasApiKey ? '(saved — leave blank to keep)' : '';
+    $('ep-hmac-status').textContent = isEdit && ep.hasHmacSecret ? '(saved — leave blank to keep)' : '';
+    $('ep-pgp-status').textContent = isEdit && ep.hasPgpPrivateKey ? '(saved — leave blank to keep)' : '';
+    $('ep-pgppass-status').textContent = isEdit && ep.hasPgpPassphrase ? '(saved — leave blank to keep)' : '';
 
     $('ep-clear-apikey-wrap').hidden = !(isEdit && ep.hasApiKey);
     $('ep-clear-hmac-wrap').hidden = !(isEdit && ep.hasHmacSecret);
@@ -201,9 +570,11 @@
     $('ep-clear-hmac').checked = false;
     $('ep-clear-pgp').checked = false;
     $('ep-clear-pgppass').checked = false;
-    $('pgp-gen-name').value = ep ? ep.name : '';
+
+    $('pgp-gen-name').value = ep ? `${ep.portal} ${ep.name}` : '';
     $('pgp-gen-email').value = '';
     $('pgp-gen-pass').value = '';
+    $('pgp-gen-days').value = '730';
     $('pgp-pub-text').value = '';
     $('pgp-pub-meta').textContent = '';
     $('pgp-pub-output').hidden = true;
@@ -211,8 +582,11 @@
     form.scrollIntoView({ behavior: 'smooth' });
   }
 
-  $('btn-new-endpoint').addEventListener('click', () => openEndpointForm(null));
+  $('btn-new-endpoint').addEventListener('click', () => {
+    openEndpointForm(null, $('ep-filter-portal').value, $('ep-filter-env').value || 'Production');
+  });
   $('btn-cancel-endpoint').addEventListener('click', () => { $('endpoint-form').hidden = true; });
+  $('btn-cancel-endpoint-top').addEventListener('click', () => { $('endpoint-form').hidden = true; });
   $('ep-pgp-file').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (file) $('ep-pgp-key').value = await file.text();
@@ -224,10 +598,11 @@
     btn.textContent = 'Generating...';
     try {
       const pass = $('pgp-gen-pass').value || $('ep-pgp-pass').value;
+      const defaultName = [$('ep-portal').value.trim(), $('ep-name').value.trim()].filter(Boolean).join(' ');
       const res = await api('/api/pgp/generate', {
         method: 'POST',
         body: {
-          name: $('pgp-gen-name').value.trim() || $('ep-name').value.trim(),
+          name: $('pgp-gen-name').value.trim() || defaultName,
           email: $('pgp-gen-email').value.trim(),
           passphrase: pass,
           bits: Number($('pgp-gen-bits').value),
@@ -277,17 +652,22 @@
 
   $('endpoint-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    let customHeaders = {};
-    const rawHeaders = $('ep-custom-headers').value.trim();
-    if (rawHeaders) {
-      try { customHeaders = JSON.parse(rawHeaders); }
-      catch { return showToast('Custom headers must be valid JSON', true); }
+    const customHeaders = {};
+    const rows = Array.from($('custom-headers-rows').children);
+    for (const row of rows) {
+      const k = row.querySelector('.hdr-key').value.trim();
+      const v = row.querySelector('.hdr-val').value.trim();
+      if (!k && !v) continue;
+      if (!k) return showToast('Custom header key cannot be empty', true);
+      customHeaders[k] = v;
     }
 
     const id = $('ep-id').value;
     const retVal = $('ep-ret-days').value.trim();
     const hbVal = $('ep-hb-days').value.trim();
     const body = {
+      portal: $('ep-portal').value.trim(),
+      environment: getFormEnv(),
       name: $('ep-name').value.trim(),
       slug: $('ep-slug').value.trim(),
       enabled: $('ep-enabled').checked,
@@ -316,17 +696,20 @@
         showToast('Endpoint created');
       }
       $('endpoint-form').hidden = true;
-      loadEndpoints();
+      loadSummary();
     } catch (err) {
       showToast(err.message, true);
     }
   });
 
+  // Events list
   async function loadEvents() {
     const params = new URLSearchParams({
       limit: String(state.limit),
       offset: String(state.offset)
     });
+    if ($('filter-portal').value) params.set('portal', $('filter-portal').value);
+    if ($('filter-env').value) params.set('environment', $('filter-env').value);
     if ($('filter-endpoint').value) params.set('endpointId', $('filter-endpoint').value);
     if ($('filter-kind').value) params.set('kind', $('filter-kind').value);
     if ($('filter-heartbeats').checked) params.set('includeHeartbeats', '1');
@@ -340,7 +723,7 @@
       if (res.items.length === 0) {
         const tr = document.createElement('tr');
         const td = document.createElement('td');
-        td.colSpan = 8;
+        td.colSpan = 9;
         td.className = 'muted';
         td.textContent = 'No webhook deliveries match the current filters.';
         tr.appendChild(td);
@@ -354,30 +737,38 @@
           c1.textContent = fmtDate(ev.receivedAt);
 
           const c2 = document.createElement('td');
-          c2.textContent = ev.endpointSlug ? `/hooks/${ev.endpointSlug}` : ev.endpointName;
+          const pText = document.createElement('span');
+          pText.textContent = `${ev.endpointPortal || 'Default'} `;
+          const envBadge = document.createElement('span');
+          envBadge.className = 'badge badge-env';
+          envBadge.textContent = ev.endpointEnvironment || 'Production';
+          c2.append(pText, envBadge);
 
           const c3 = document.createElement('td');
+          c3.textContent = ev.endpointName || `/hooks/${ev.endpointSlug}`;
+
+          const c4 = document.createElement('td');
           const b = document.createElement('span');
           b.className = `badge badge-${ev.kind}`;
           b.textContent = ev.kind;
-          c3.appendChild(b);
-
-          const c4 = document.createElement('td');
-          c4.textContent = ev.eventCases || ev.errorMessage || '-';
+          c4.appendChild(b);
 
           const c5 = document.createElement('td');
-          c5.textContent = String(ev.recordCount);
+          c5.textContent = ev.eventCases || ev.errorMessage || '-';
 
           const c6 = document.createElement('td');
+          c6.textContent = String(ev.recordCount);
+
+          const c7 = document.createElement('td');
           const sec = [];
           if (ev.wasEncrypted) sec.push('PGP');
           if (ev.wasCompressed) sec.push('gzip');
-          c6.textContent = sec.join(' + ') || 'plain';
-
-          const c7 = document.createElement('td');
-          c7.textContent = String(ev.statusCode);
+          c7.textContent = sec.join(' + ') || 'plain';
 
           const c8 = document.createElement('td');
+          c8.textContent = String(ev.statusCode);
+
+          const c9 = document.createElement('td');
           const del = document.createElement('button');
           del.className = 'btn btn-sm btn-danger';
           del.textContent = 'Delete';
@@ -385,12 +776,12 @@
             e.stopPropagation();
             try {
               await api(`/api/events/${ev.id}`, { method: 'DELETE' });
-              loadEvents();
+              loadSummary().then(loadEvents);
             } catch (err) { showToast(err.message, true); }
           };
-          c8.appendChild(del);
+          c9.appendChild(del);
 
-          tr.append(c1, c2, c3, c4, c5, c6, c7, c8);
+          tr.append(c1, c2, c3, c4, c5, c6, c7, c8, c9);
           tbody.appendChild(tr);
         });
       }
@@ -408,12 +799,13 @@
   async function openEventModal(id) {
     try {
       const ev = await api(`/api/events/${id}`);
-      $('modal-title').textContent = `${ev.kind.toUpperCase()} #${ev.id} — /hooks/${ev.endpointSlug}`;
+      $('modal-title').textContent = `${ev.kind.toUpperCase()} #${ev.id} — ${ev.endpointPortal} › ${ev.endpointEnvironment} › ${ev.endpointName}`;
 
       const meta = $('modal-meta');
       meta.replaceChildren();
       [
-        ['Received', fmtDate(ev.receivedAt)],
+        ['Received (Local)', fmtDate(ev.receivedAt)],
+        ['Endpoint URL', `/hooks/${ev.endpointSlug}`],
         ['Status', ev.statusCode],
         ['Subscription ID', ev.subscriptionId || '-'],
         ['Session ID', ev.sessionId || '-'],
@@ -458,16 +850,107 @@
     showToast('Copied payload JSON');
   });
 
+  $('filter-portal').addEventListener('change', () => {
+    syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
+    state.offset = 0;
+    renderEventsSummary();
+    loadEvents();
+  });
+  $('filter-env').addEventListener('change', () => {
+    syncCascadingFilters('filter-portal', 'filter-env', 'filter-endpoint', true);
+    state.offset = 0;
+    renderEventsSummary();
+    loadEvents();
+  });
   ['filter-endpoint', 'filter-kind', 'filter-heartbeats'].forEach((id) => {
-    $(id).addEventListener('change', () => { state.offset = 0; loadEvents(); });
+    $(id).addEventListener('change', () => {
+      state.offset = 0;
+      renderEventsSummary();
+      loadEvents();
+    });
   });
   $('filter-query').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { state.offset = 0; loadEvents(); }
   });
-  $('btn-refresh-events').addEventListener('click', loadEvents);
+  $('btn-refresh-events').addEventListener('click', () => loadSummary().then(loadEvents));
   $('btn-prev').addEventListener('click', () => { state.offset = Math.max(0, state.offset - state.limit); loadEvents(); });
   $('btn-next').addEventListener('click', () => { state.offset += state.limit; loadEvents(); });
 
+  $('ep-filter-portal').addEventListener('change', () => {
+    syncCascadingFilters('ep-filter-portal', 'ep-filter-env', null, false);
+    renderEndpointsTree();
+  });
+  $('ep-filter-env').addEventListener('change', renderEndpointsTree);
+
+  // Audit Log Tab
+  async function loadAudit() {
+    $('audit-tz-note').textContent = `Timestamps displayed in local timezone: ${localTimeZoneLabel()}`;
+    const params = new URLSearchParams({
+      limit: String(state.auditLimit),
+      offset: String(state.auditOffset)
+    });
+    if ($('audit-filter-action').value) params.set('action', $('audit-filter-action').value);
+    if ($('audit-filter-query').value.trim()) params.set('q', $('audit-filter-query').value.trim());
+
+    try {
+      const res = await api(`/api/audit?${params.toString()}`);
+      const tbody = $('audit-tbody');
+      tbody.replaceChildren();
+
+      if (res.items.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.className = 'muted';
+        td.textContent = 'No administrative operations recorded yet.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else {
+        res.items.forEach((item) => {
+          const tr = document.createElement('tr');
+
+          const c1 = document.createElement('td');
+          c1.textContent = fmtDate(item.occurredAt);
+
+          const c2 = document.createElement('td');
+          c2.textContent = item.actorEmail || item.actorId || 'unknown';
+
+          const c3 = document.createElement('td');
+          const b = document.createElement('span');
+          b.className = 'badge badge-challenge';
+          b.textContent = item.action;
+          c3.appendChild(b);
+
+          const c4 = document.createElement('td');
+          c4.textContent = item.targetLabel || item.targetId || '-';
+
+          const c5 = document.createElement('td');
+          c5.textContent = item.details || '-';
+
+          tr.append(c1, c2, c3, c4, c5);
+          tbody.appendChild(tr);
+        });
+      }
+
+      const start = res.total === 0 ? 0 : state.auditOffset + 1;
+      const end = Math.min(state.auditOffset + res.items.length, res.total);
+      $('audit-count').textContent = `Showing ${start}-${end} of ${res.total}`;
+      $('audit-prev').disabled = state.auditOffset === 0;
+      $('audit-next').disabled = state.auditOffset + res.items.length >= res.total;
+    } catch (e) {
+      showToast(e.message, true);
+    }
+  }
+
+  $('audit-filter-action').addEventListener('change', () => { state.auditOffset = 0; loadAudit(); });
+  $('audit-filter-query').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { state.auditOffset = 0; loadAudit(); }
+  });
+  $('btn-refresh-audit').addEventListener('click', loadAudit);
+  $('audit-prev').addEventListener('click', () => { state.auditOffset = Math.max(0, state.auditOffset - state.auditLimit); loadAudit(); });
+  $('audit-next').addEventListener('click', () => { state.auditOffset += state.auditLimit; loadAudit(); });
+
+  // Settings Tab
   async function loadSettings() {
     try {
       const res = await api('/api/settings');
@@ -482,6 +965,7 @@
         ['Total Stored Deliveries', res.stats.totalEvents],
         ['Heartbeats', res.stats.heartbeatEvents],
         ['Errors', res.stats.errorEvents],
+        ['Audit Log Entries', res.stats.auditLogCount],
         ['SQLite File Size', fmtBytes(res.stats.dbSizeBytes)],
         ['At-Rest Secret Encryption', res.stats.atRestEncryption ? 'AES-256-GCM active' : 'Disabled (no OBSERVER_MASTER_KEY)']
       ].forEach(([k, v]) => {
@@ -524,5 +1008,5 @@
   });
 
   loadMe();
-  loadEndpoints().then(loadEvents);
+  loadSummary().then(loadEvents);
 })();

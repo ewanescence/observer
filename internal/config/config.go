@@ -17,6 +17,7 @@ type Config struct {
 	MasterKey              []byte
 	TrustForwardAuth       bool
 	AllowedUsers           map[string]struct{}
+	AutenticoAppID         string
 	AutenticoLogoutPath    string
 	RetentionDays          int
 	HeartbeatRetentionDays int
@@ -31,6 +32,7 @@ func Load() (Config, error) {
 		ListenAddr:             envString("OBSERVER_LISTEN_ADDR", ":8080"),
 		DBPath:                 envString("OBSERVER_DB_PATH", "/data/observer.db"),
 		TrustForwardAuth:       envBool("OBSERVER_TRUST_FORWARD_AUTH", true),
+		AutenticoAppID:         envString("OBSERVER_AUTENTICO_APP_ID", ""),
 		AutenticoLogoutPath:    envString("OBSERVER_AUTENTICO_LOGOUT_PATH", ""),
 		RetentionDays:          envInt("OBSERVER_RETENTION_DAYS", 30),
 		HeartbeatRetentionDays: envInt("OBSERVER_HEARTBEAT_RETENTION_DAYS", 1),
@@ -38,6 +40,10 @@ func Load() (Config, error) {
 		MaxBodyBytes:           envInt64("OBSERVER_MAX_BODY_BYTES", 10*1024*1024),
 		MaxDecompressedBytes:   envInt64("OBSERVER_MAX_DECOMPRESSED_BYTES", 50*1024*1024),
 		AllowedUsers:           make(map[string]struct{}),
+	}
+
+	if cfg.AutenticoLogoutPath == "" && cfg.AutenticoAppID != "" {
+		cfg.AutenticoLogoutPath = "/_autentico/" + cfg.AutenticoAppID + "/logout"
 	}
 
 	if cfg.RetentionDays < 1 {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 
@@ -89,18 +91,57 @@ func requestHost(r *http.Request) string {
 	return r.Host
 }
 
-func (s *Server) actorFromRequest(r *http.Request) (string, string) {
+func (s *Server) actorFromRequest(r *http.Request) (string, string, string) {
 	uid := strings.TrimSpace(r.Header.Get("X-Auth-User"))
 	email := strings.TrimSpace(r.Header.Get("X-Auth-Email"))
+	hdrName := strings.TrimSpace(r.Header.Get("X-Auth-Name"))
+	if hdrName == "" {
+		hdrName = strings.TrimSpace(r.Header.Get("X-Auth-Username"))
+	}
 	if uid == "" && !s.cfg.TrustForwardAuth {
 		uid = "local-dev"
 	}
-	return uid, email
+	return uid, email, hdrName
+}
+
+func (s *Server) resolveActor(r *http.Request) (string, string, string) {
+	uid, email, hdrName := s.actorFromRequest(r)
+	if uid == "" {
+		return "", email, hdrName
+	}
+
+	ctx := r.Context()
+	cached, err := s.store.GetUser(ctx, uid)
+	needsSync := err != nil || cached.DisplayName == "" || cached.SyncedAt.IsZero() || time.Since(cached.SyncedAt) > 15*time.Minute
+
+	if s.autenticoClient.Enabled() && needsSync {
+		lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		prof, lookupErr := s.autenticoClient.LookupUser(lookupCtx, uid)
+		cancel()
+		if lookupErr == nil {
+			resolvedEmail := email
+			if resolvedEmail == "" {
+				resolvedEmail = prof.Email
+			}
+			_ = s.store.SyncUserFromAutentico(ctx, uid, resolvedEmail, prof.DisplayName)
+			return uid, resolvedEmail, prof.DisplayName
+		}
+	}
+
+	_ = s.store.UpsertUser(ctx, uid, email, hdrName)
+	if err == nil {
+		if email == "" {
+			email = cached.Email
+		}
+		if hdrName == "" {
+			hdrName = cached.DisplayName
+		}
+	}
+	return uid, email, hdrName
 }
 
 func (s *Server) recordAudit(r *http.Request, action, targetType, targetID, targetLabel, details string) {
-	uid, email := s.actorFromRequest(r)
-	_ = s.store.UpsertUser(r.Context(), uid, email)
+	uid, email, _ := s.resolveActor(r)
 	_ = s.store.InsertAuditLog(r.Context(), db.AuditLog{
 		ActorID:     uid,
 		ActorEmail:  email,
@@ -113,12 +154,7 @@ func (s *Server) recordAudit(r *http.Request, action, targetType, targetID, targ
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	uid, email := s.actorFromRequest(r)
-	_ = s.store.UpsertUser(r.Context(), uid, email)
-	displayName := ""
-	if u, err := s.store.GetUser(r.Context(), uid); err == nil {
-		displayName = u.DisplayName
-	}
+	_, email, displayName := s.resolveActor(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"email":            email,
 		"displayName":      displayName,
@@ -451,45 +487,6 @@ func (s *Server) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 		"items": items,
 		"total": total,
 	})
-}
-
-func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := s.store.ListUsers(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if users == nil {
-		users = []db.User{}
-	}
-	writeJSON(w, http.StatusOK, users)
-}
-
-func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimSpace(r.PathValue("id"))
-	if id == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid user id")
-		return
-	}
-	var req struct {
-		DisplayName string `json:"displayName"`
-	}
-	if err := decodeJSONBody(w, r, &req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if len(strings.TrimSpace(req.DisplayName)) > 80 {
-		writeJSONError(w, http.StatusBadRequest, "displayName must be <= 80 characters")
-		return
-	}
-	updated, err := s.store.SetUserDisplayName(r.Context(), id, req.DisplayName)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	s.recordAudit(r, "user.rename", "user", updated.UserID, updated.DisplayName,
-		fmt.Sprintf("mapped user %s -> %q", updated.UserID, updated.DisplayName))
-	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {

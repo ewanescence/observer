@@ -15,12 +15,18 @@ type Config struct {
 	ListenAddr             string
 	DBPath                 string
 	MasterKey              []byte
-	TrustForwardAuth       bool
-	AllowedUsers           map[string]struct{}
-	AutenticoAppID         string
-	AutenticoURL           string
-	AutenticoLogoutPath    string
-	CentralLogoutURL       string
+	TrustForwardAuth           bool
+	AllowedUsers               map[string]struct{}
+	AutenticoAppID             string
+	AutenticoURL               string
+	AutenticoAPIURL            string
+	AutenticoAdminClientID     string
+	AutenticoAdminClientSecret string
+	AutenticoAdminUsername     string
+	AutenticoAdminPassword     string
+	AutenticoAdminToken        string
+	AutenticoLogoutPath        string
+	CentralLogoutURL           string
 	RetentionDays          int
 	HeartbeatRetentionDays int
 	RetentionInterval      time.Duration
@@ -33,10 +39,16 @@ func Load() (Config, error) {
 	cfg := Config{
 		ListenAddr:             envString("OBSERVER_LISTEN_ADDR", ":8080"),
 		DBPath:                 envString("OBSERVER_DB_PATH", "/data/observer.db"),
-		TrustForwardAuth:       envBool("OBSERVER_TRUST_FORWARD_AUTH", true),
-		AutenticoAppID:         envString("OBSERVER_AUTENTICO_APP_ID", envString("OBSERVED_AUTENTICO_APP_ID", "")),
-		AutenticoURL:           envString("OBSERVER_AUTENTICO_URL", ""),
-		AutenticoLogoutPath:    envString("OBSERVER_AUTENTICO_LOGOUT_PATH", ""),
+		TrustForwardAuth:           envBool("OBSERVER_TRUST_FORWARD_AUTH", true),
+		AutenticoAppID:             envString("OBSERVER_AUTENTICO_APP_ID", envString("OBSERVED_AUTENTICO_APP_ID", "")),
+		AutenticoURL:               envString("OBSERVER_AUTENTICO_URL", ""),
+		AutenticoAPIURL:            envString("OBSERVER_AUTENTICO_API_URL", ""),
+		AutenticoAdminClientID:     envString("OBSERVER_AUTENTICO_ADMIN_CLIENT_ID", "autentico-admin"),
+		AutenticoAdminClientSecret: envString("OBSERVER_AUTENTICO_ADMIN_CLIENT_SECRET", ""),
+		AutenticoAdminUsername:     envString("OBSERVER_AUTENTICO_ADMIN_USERNAME", ""),
+		AutenticoAdminPassword:     envString("OBSERVER_AUTENTICO_ADMIN_PASSWORD", ""),
+		AutenticoAdminToken:        envString("OBSERVER_AUTENTICO_ADMIN_TOKEN", ""),
+		AutenticoLogoutPath:        envString("OBSERVER_AUTENTICO_LOGOUT_PATH", ""),
 		RetentionDays:          envInt("OBSERVER_RETENTION_DAYS", 30),
 		HeartbeatRetentionDays: envInt("OBSERVER_HEARTBEAT_RETENTION_DAYS", 1),
 		RetentionInterval:      envDuration("OBSERVER_RETENTION_INTERVAL", time.Hour),
@@ -50,6 +62,9 @@ func Load() (Config, error) {
 	}
 	if cfg.AutenticoURL != "" {
 		cfg.CentralLogoutURL = strings.TrimRight(cfg.AutenticoURL, "/") + "/oauth2/logout"
+	}
+	if cfg.AutenticoAPIURL == "" {
+		cfg.AutenticoAPIURL = cfg.AutenticoURL
 	}
 
 	if cfg.RetentionDays < 1 {

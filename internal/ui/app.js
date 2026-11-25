@@ -892,63 +892,8 @@
   });
   $('ep-filter-env').addEventListener('change', renderEndpointsTree);
 
-  async function loadUserDirectory() {
-    try {
-      const users = await api('/api/users');
-      const container = $('user-dir-list');
-      container.replaceChildren();
-      if (users.length === 0) {
-        container.textContent = 'No users recorded yet.';
-        container.className = 'muted';
-        return;
-      }
-      container.className = 'ep-list';
-      users.forEach((u) => {
-        const row = document.createElement('div');
-        row.className = 'header-row';
-
-        const meta = document.createElement('div');
-        const idSpan = document.createElement('code');
-        idSpan.textContent = u.userId;
-        const extra = document.createElement('div');
-        extra.className = 'muted';
-        extra.textContent = [u.email || null, `Last seen: ${fmtDate(u.lastSeenAt)}`].filter(Boolean).join(' · ');
-        meta.append(idSpan, extra);
-
-        const nameInput = document.createElement('input');
-        nameInput.type = 'text';
-        nameInput.placeholder = 'Friendly name (e.g. Steve)';
-        nameInput.value = u.displayName || '';
-
-        const saveBtn = document.createElement('button');
-        saveBtn.type = 'button';
-        saveBtn.className = 'btn btn-sm btn-primary';
-        saveBtn.textContent = 'Save';
-        saveBtn.onclick = async () => {
-          try {
-            await api(`/api/users/${encodeURIComponent(u.userId)}`, {
-              method: 'PUT',
-              body: { displayName: nameInput.value.trim() }
-            });
-            showToast('User name updated');
-            loadMe();
-            loadAudit();
-          } catch (err) {
-            showToast(err.message, true);
-          }
-        };
-
-        row.append(meta, nameInput, saveBtn);
-        container.appendChild(row);
-      });
-    } catch (e) {
-      showToast(e.message, true);
-    }
-  }
-
-  // Audit Log Tab
+  // Audit Log Tab (read-only identities sourced from Autentico)
   async function loadAudit() {
-    loadUserDirectory();
     $('audit-tz-note').textContent = `Timestamps displayed in local timezone: ${localTimeZoneLabel()}`;
     const params = new URLSearchParams({
       limit: String(state.auditLimit),
@@ -980,32 +925,8 @@
           const c2 = document.createElement('td');
           const actorSpan = document.createElement('span');
           actorSpan.textContent = item.actorName || item.actorEmail || item.actorId || 'unknown';
-          if (item.actorId) actorSpan.title = `User ID: ${item.actorId}`;
+          if (item.actorId) actorSpan.title = `Autentico ID: ${item.actorId}`;
           c2.appendChild(actorSpan);
-          if (item.actorId) {
-            const nameBtn = document.createElement('button');
-            nameBtn.type = 'button';
-            nameBtn.className = 'btn btn-sm';
-            nameBtn.style.marginLeft = '8px';
-            nameBtn.textContent = item.actorName && item.actorName !== item.actorId ? 'Rename' : 'Set name';
-            nameBtn.onclick = async () => {
-              const current = item.actorName && item.actorName !== item.actorId ? item.actorName : '';
-              const next = prompt(`Display name for Autentico user ${item.actorId}:`, current);
-              if (next === null) return;
-              try {
-                await api(`/api/users/${encodeURIComponent(item.actorId)}`, {
-                  method: 'PUT',
-                  body: { displayName: next.trim() }
-                });
-                showToast('User name updated');
-                loadMe();
-                loadAudit();
-              } catch (err) {
-                showToast(err.message, true);
-              }
-            };
-            c2.appendChild(nameBtn);
-          }
 
           const c3 = document.createElement('td');
           const b = document.createElement('span');

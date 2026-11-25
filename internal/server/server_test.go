@@ -303,25 +303,86 @@ func TestPortalHierarchySummaryAndAuditLog(t *testing.T) {
 		t.Fatalf("unexpected audit log response: %+v", auditRes)
 	}
 
-	// 7. Map xid-1 to a friendly display name and verify audit log + /api/me reflect it
-	req = httptest.NewRequest(http.MethodPut, "/api/users/xid-1", strings.NewReader(`{"displayName":"Alice Support"}`))
+	// 7. Confirm user names cannot be modified at Observer level
+	req = httptest.NewRequest(http.MethodPut, "/api/users/xid-1", strings.NewReader(`{"displayName":"Tampered"}`))
 	req.Header.Set("X-Auth-User", "xid-1")
 	req.Header.Set("X-Requested-With", "observer")
-	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 renaming user, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected PUT /api/users/{id} not to succeed")
+	}
+}
+
+func TestAutenticoProfileSyncReadOnly(t *testing.T) {
+	mockAuth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/oauth2/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"tok-admin","expires_in":3600}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/api/users/xid-99":
+			if r.Header.Get("Authorization") != "Bearer tok-admin" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"id":"xid-99","username":"steve","email":"steve@example.com","given_name":"Steve","family_name":"Admin"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockAuth.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	box, err := crypto.NewBox(bytes.Repeat([]byte{0x42}, 32))
+	if err != nil {
+		t.Fatalf("new box: %v", err)
+	}
+	store, err := db.Open(dbPath, box)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer store.Close()
+
+	cfg := config.Config{
+		DBPath:                   dbPath,
+		TrustForwardAuth:         true,
+		AutenticoAPIURL:          mockAuth.URL,
+		AutenticoAdminClientID:   "observer-sync",
+		AutenticoAdminUsername:   "svc",
+		AutenticoAdminPassword:   "pw",
+		RetentionDays:            30,
+		HeartbeatRetentionDays:   1,
+		RetentionInterval:        time.Hour,
+		MaxBodyBytes:             1024 * 1024,
+		MaxDecompressedBytes:     5 * 1024 * 1024,
+		AllowedUsers:             map[string]struct{}{},
+	}
+	ret := retention.NewWorker(store, db.RetentionSettings{RetentionDays: 30, HeartbeatRetentionDays: 1}, time.Hour)
+	h := server.New(cfg, store, ret).Handler()
+
+	// Create endpoint with only X-Auth-User (no X-Auth-Email) -> Observer syncs name from Autentico
+	req := httptest.NewRequest(http.MethodPost, "/api/endpoints", strings.NewReader(`{"portal":"Acme","environment":"Production","name":"SyncTest","slug":"synctest","enabled":true,"hmacRequired":false,"customHeaders":{}}`))
+	req.Header.Set("X-Auth-User", "xid-99")
+	req.Header.Set("X-Requested-With", "observer")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/audit?action=endpoint.create", nil)
-	req.Header.Set("X-Auth-User", "xid-1")
+	req = httptest.NewRequest(http.MethodGet, "/api/audit", nil)
+	req.Header.Set("X-Auth-User", "xid-99")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if err := json.Unmarshal(rec.Body.Bytes(), &auditRes); err != nil {
-		t.Fatalf("unmarshal audit after rename: %v", err)
+	var auditRes struct {
+		Items []db.AuditLog `json:"items"`
 	}
-	if auditRes.Items[0].ActorName != "Alice Support" {
-		t.Fatalf("expected ActorName 'Alice Support', got %q", auditRes.Items[0].ActorName)
+	if err := json.Unmarshal(rec.Body.Bytes(), &auditRes); err != nil {
+		t.Fatalf("unmarshal audit: %v", err)
+	}
+	if len(auditRes.Items) != 1 || auditRes.Items[0].ActorName != "Steve Admin (steve)" {
+		t.Fatalf("expected ActorName 'Steve Admin (steve)', got %+v", auditRes.Items)
 	}
 }

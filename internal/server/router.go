@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 
+	"github.com/elematte/observer/internal/autentico"
 	"github.com/elematte/observer/internal/config"
 	"github.com/elematte/observer/internal/db"
 	"github.com/elematte/observer/internal/retention"
@@ -13,10 +14,11 @@ import (
 
 // Server serves both public CSOD webhook ingestion routes and ForwardAuth-protected admin routes.
 type Server struct {
-	cfg       config.Config
-	store     *db.Store
-	retention *retention.Worker
-	handler   http.Handler
+	cfg             config.Config
+	store           *db.Store
+	retention       *retention.Worker
+	autenticoClient *autentico.Client
+	handler         http.Handler
 }
 
 // New constructs the HTTP router and middleware stack.
@@ -25,6 +27,14 @@ func New(cfg config.Config, store *db.Store, ret *retention.Worker) *Server {
 		cfg:       cfg,
 		store:     store,
 		retention: ret,
+		autenticoClient: autentico.NewClient(
+			cfg.AutenticoAPIURL,
+			cfg.AutenticoAdminClientID,
+			cfg.AutenticoAdminClientSecret,
+			cfg.AutenticoAdminUsername,
+			cfg.AutenticoAdminPassword,
+			cfg.AutenticoAdminToken,
+		),
 	}
 
 	rootMux := http.NewServeMux()
@@ -56,8 +66,6 @@ func New(cfg config.Config, store *db.Store, ret *retention.Worker) *Server {
 	adminMux.HandleFunc("GET /api/events/{id}", s.handleGetEvent)
 	adminMux.HandleFunc("DELETE /api/events/{id}", s.handleDeleteEvent)
 	adminMux.HandleFunc("GET /api/audit", s.handleListAuditLogs)
-	adminMux.HandleFunc("GET /api/users", s.handleListUsers)
-	adminMux.HandleFunc("PUT /api/users/{id}", s.handleUpdateUser)
 	adminMux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	adminMux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	adminMux.HandleFunc("POST /api/retention/purge", s.handlePurgeNow)

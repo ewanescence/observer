@@ -138,11 +138,12 @@ type AuditLog struct {
 	Details     string    `json:"details"`
 }
 
-// User maps an Autentico user ID (X-Auth-User) to a human-readable display name.
+// User caches read-only identity fields synced from Autentico for an X-Auth-User ID.
 type User struct {
 	UserID      string    `json:"userId"`
 	Email       string    `json:"email"`
 	DisplayName string    `json:"displayName"`
+	SyncedAt    time.Time `json:"syncedAt"`
 	LastSeenAt  time.Time `json:"lastSeenAt"`
 }
 
@@ -291,11 +292,22 @@ CREATE TABLE IF NOT EXISTS users (
 	user_id TEXT PRIMARY KEY,
 	email TEXT NOT NULL DEFAULT '',
 	display_name TEXT NOT NULL DEFAULT '',
+	synced_at TEXT NOT NULL DEFAULT '',
 	last_seen_at TEXT NOT NULL
 );
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
+	}
+
+	userCols, err := s.tableColumns(ctx, "users")
+	if err != nil {
+		return err
+	}
+	if !userCols["synced_at"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE users ADD COLUMN synced_at TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
 	}
 
 	// Upgrade existing databases created before portal/environment columns existed.
@@ -894,86 +906,67 @@ func (s *Store) ListAuditLogs(ctx context.Context, f AuditFilter) ([]AuditLog, i
 	return items, total, rows.Err()
 }
 
-// UpsertUser records or refreshes an authenticated user's last seen timestamp and email.
-func (s *Store) UpsertUser(ctx context.Context, userID, email string) error {
+// UpsertUser records or refreshes an authenticated user's last seen timestamp and header-provided profile.
+func (s *Store) UpsertUser(ctx context.Context, userID, email, displayName string) error {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return nil
 	}
 	email = strings.TrimSpace(email)
+	displayName = strings.TrimSpace(displayName)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO users (user_id, email, display_name, last_seen_at)
-		VALUES (?, ?, '', ?)
+		INSERT INTO users (user_id, email, display_name, synced_at, last_seen_at)
+		VALUES (?, ?, ?, '', ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			email = CASE WHEN excluded.email != '' THEN excluded.email ELSE users.email END,
+			display_name = CASE WHEN excluded.display_name != '' AND users.synced_at = '' THEN excluded.display_name ELSE users.display_name END,
 			last_seen_at = excluded.last_seen_at
-	`, userID, email, now)
+	`, userID, email, displayName, now)
 	return err
 }
 
-// GetUser returns a stored user profile by Autentico user ID.
+// SyncUserFromAutentico stores read-only identity fields fetched from Autentico's API.
+func (s *Store) SyncUserFromAutentico(ctx context.Context, userID, email, displayName string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	email = strings.TrimSpace(email)
+	displayName = strings.TrimSpace(displayName)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO users (user_id, email, display_name, synced_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			email = CASE WHEN excluded.email != '' THEN excluded.email ELSE users.email END,
+			display_name = excluded.display_name,
+			synced_at = excluded.synced_at,
+			last_seen_at = excluded.last_seen_at
+	`, userID, email, displayName, now, now)
+	return err
+}
+
+// GetUser returns a cached user profile by Autentico user ID.
 func (s *Store) GetUser(ctx context.Context, userID string) (User, error) {
 	var u User
-	var seenStr string
+	var syncedStr, seenStr string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT user_id, email, display_name, last_seen_at
+		SELECT user_id, email, display_name, synced_at, last_seen_at
 		FROM users
 		WHERE user_id = ?
-	`, userID).Scan(&u.UserID, &u.Email, &u.DisplayName, &seenStr)
+	`, userID).Scan(&u.UserID, &u.Email, &u.DisplayName, &syncedStr, &seenStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrNotFound
 		}
 		return User{}, err
 	}
+	if syncedStr != "" {
+		u.SyncedAt, _ = time.Parse(time.RFC3339Nano, syncedStr)
+	}
 	u.LastSeenAt, _ = time.Parse(time.RFC3339Nano, seenStr)
 	return u, nil
-}
-
-// ListUsers returns all known authenticated users ordered by display name / last seen.
-func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT user_id, email, display_name, last_seen_at
-		FROM users
-		ORDER BY last_seen_at DESC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []User
-	for rows.Next() {
-		var u User
-		var seenStr string
-		if err := rows.Scan(&u.UserID, &u.Email, &u.DisplayName, &seenStr); err != nil {
-			return nil, err
-		}
-		u.LastSeenAt, _ = time.Parse(time.RFC3339Nano, seenStr)
-		out = append(out, u)
-	}
-	return out, rows.Err()
-}
-
-// SetUserDisplayName sets a friendly display name for an Autentico user ID.
-func (s *Store) SetUserDisplayName(ctx context.Context, userID, displayName string) (User, error) {
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return User{}, errors.New("userId is required")
-	}
-	displayName = strings.TrimSpace(displayName)
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO users (user_id, email, display_name, last_seen_at)
-		VALUES (?, '', ?, ?)
-		ON CONFLICT(user_id) DO UPDATE SET
-			display_name = excluded.display_name
-	`, userID, displayName, now)
-	if err != nil {
-		return User{}, err
-	}
-	return s.GetUser(ctx, userID)
 }
 
 // GetRetentionSettings returns stored global retention settings or defaults.

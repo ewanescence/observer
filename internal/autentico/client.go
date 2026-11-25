@@ -2,6 +2,7 @@ package autentico
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -112,6 +113,9 @@ func (c *Client) fetchUser(ctx context.Context, token, userID string) (UserProfi
 
 	if resp.StatusCode != http.StatusOK {
 		bodySnippet := readBodySnippet(resp.Body)
+		if resp.StatusCode == http.StatusForbidden {
+			return UserProfile{}, resp.StatusCode, fmt.Errorf("GET %s returned HTTP %d (token aud=%v): %s", endpoint, resp.StatusCode, tokenAudiences(token), bodySnippet)
+		}
 		return UserProfile{}, resp.StatusCode, fmt.Errorf("GET %s returned HTTP %d: %s", endpoint, resp.StatusCode, bodySnippet)
 	}
 
@@ -242,4 +246,22 @@ func (c *Client) requestToken(ctx context.Context, useSecretPost bool) (tokenRes
 func readBodySnippet(r io.Reader) string {
 	b, _ := io.ReadAll(io.LimitReader(r, 512))
 	return strings.TrimSpace(string(b))
+}
+
+func tokenAudiences(jwtToken string) any {
+	parts := strings.Split(jwtToken, ".")
+	if len(parts) < 2 {
+		return "non-jwt"
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return "decode-err"
+	}
+	var claims struct {
+		Aud any `json:"aud"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "json-err"
+	}
+	return claims.Aud
 }

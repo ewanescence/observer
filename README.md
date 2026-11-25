@@ -33,3 +33,9 @@ Lightweight Go application for receiving, authenticating, decrypting, decompress
    ```
 
 5. Open `https://webhooks.example.com` (authenticates via Autentico), create an endpoint (e.g., slug `training`), and configure `https://webhooks.example.com/hooks/training` in Cornerstone CSX.
+
+## Running Tests
+
+```bash
+docker run --rm -v "$PWD":/src -w /src golang:1.23-alpine sh -c "go mod tidy && go test -v ./..."
+```

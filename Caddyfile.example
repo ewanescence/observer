@@ -1,0 +1,48 @@
+# Replace:
+#   webhooks.example.com  -> your public Observer hostname registered in Autentico
+#   autentico:9999        -> Autentico's private listener address on the Docker network
+#   AUTENTICO_APP_ID      -> data.id returned when registering the Protected App in Autentico
+#
+# Important:
+# 1. /hooks/* bypasses ForwardAuth so Cornerstone (CSOD) servers can deliver webhooks
+#    authenticated by x-api-key, custom x-* headers, Token Challenge, and HMAC-SHA256.
+# 2. /_autentico/* is routed directly to Autentico for ForwardAuth login/callback/logout.
+# 3. The inner `route` block preserves header-stripping order per Autentico's proxy contract.
+
+webhooks.example.com {
+    route {
+        @webhooks path /hooks/*
+        handle @webhooks {
+            reverse_proxy observer:8080
+        }
+
+        @bootstrap path /_autentico/*
+        handle @bootstrap {
+            reverse_proxy autentico:9999 {
+                header_up X-Forwarded-Host {http.request.hostport}
+                header_up X-Forwarded-Proto https
+            }
+        }
+
+        handle {
+            route {
+                request_header -X-Auth-User
+                request_header -X-Auth-Email
+                request_header -X-Auth-Groups
+
+                forward_auth autentico:9999 {
+                    uri /forward-auth/AUTENTICO_APP_ID/check?redirect=1
+                    header_up X-Forwarded-Host {http.request.hostport}
+                    header_up X-Forwarded-Proto https
+                    copy_headers X-Auth-User X-Auth-Email Cookie
+                }
+
+                reverse_proxy observer:8080 {
+                    header_up -Authorization
+                    header_up -X-Forwarded-Method
+                    header_up -X-Forwarded-Uri
+                }
+            }
+        }
+    }
+}

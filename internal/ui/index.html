@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Observer — CSOD Webhook Receiver</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <strong>Observer</strong>
+      <span class="muted">CSOD Webhooks</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="events">Events</button>
+      <button class="tab" data-tab="endpoints">Endpoints</button>
+      <button class="tab" data-tab="settings">Retention &amp; Status</button>
+    </nav>
+    <div class="user-box" id="user-box">
+      <span id="user-label" class="muted"></span>
+      <form id="logout-form" method="post" hidden>
+        <button type="submit" class="btn btn-sm">Sign out</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="toast" class="toast" hidden></div>
+
+    <!-- Events Tab -->
+    <section id="tab-events" class="panel">
+      <div class="toolbar">
+        <select id="filter-endpoint">
+          <option value="">All endpoints</option>
+        </select>
+        <select id="filter-kind">
+          <option value="">All non-heartbeats</option>
+          <option value="event">Events only</option>
+          <option value="heartbeat">Heartbeats</option>
+          <option value="challenge">Challenges</option>
+          <option value="error">Errors</option>
+        </select>
+        <label class="checkbox-inline">
+          <input type="checkbox" id="filter-heartbeats"> Include heartbeats
+        </label>
+        <input type="search" id="filter-query" placeholder="Search payload, subscriptionId, case...">
+        <button id="btn-refresh-events" class="btn">Refresh</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Received</th>
+              <th>Endpoint</th>
+              <th>Kind</th>
+              <th>Event Cases</th>
+              <th>Records</th>
+              <th>Security</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="events-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <span id="events-count" class="muted"></span>
+        <div>
+          <button id="btn-prev" class="btn btn-sm">Prev</button>
+          <button id="btn-next" class="btn btn-sm">Next</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Endpoints Tab -->
+    <section id="tab-endpoints" class="panel" hidden>
+      <div class="toolbar">
+        <h2 style="margin:0">Listening Endpoints</h2>
+        <button id="btn-new-endpoint" class="btn btn-primary">+ New Endpoint</button>
+      </div>
+      <div id="endpoints-list" class="cards"></div>
+
+      <form id="endpoint-form" class="card form-card" hidden>
+        <h3 id="endpoint-form-title">New Endpoint</h3>
+        <input type="hidden" id="ep-id">
+
+        <div class="grid-2">
+          <label>Name
+            <input type="text" id="ep-name" required placeholder="Training Production">
+          </label>
+          <label>Slug (URL: <code>/hooks/&lt;slug&gt;</code>)
+            <input type="text" id="ep-slug" required pattern="[a-z0-9][a-z0-9_-]{0,63}" placeholder="training">
+          </label>
+        </div>
+
+        <div class="grid-2">
+          <label class="checkbox-inline">
+            <input type="checkbox" id="ep-enabled" checked> Endpoint enabled
+          </label>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="ep-hmac-required" checked> Require HMAC-SHA256 signature
+          </label>
+        </div>
+
+        <div class="grid-2">
+          <label>Expected <code>x-api-key</code> <span id="ep-apikey-status" class="muted"></span>
+            <input type="password" id="ep-apikey" autocomplete="new-password" placeholder="Optional CSOD API key">
+            <label class="checkbox-inline small-check" id="ep-clear-apikey-wrap" hidden>
+              <input type="checkbox" id="ep-clear-apikey"> Clear existing API key
+            </label>
+          </label>
+          <label>HMAC Secret <span id="ep-hmac-status" class="muted"></span>
+            <input type="password" id="ep-hmac" autocomplete="new-password" placeholder="Base64 or plain shared secret">
+            <label class="checkbox-inline small-check" id="ep-clear-hmac-wrap" hidden>
+              <input type="checkbox" id="ep-clear-hmac"> Clear existing HMAC secret
+            </label>
+          </label>
+        </div>
+
+        <label>Custom Headers (JSON object, max 4 pairs, keys must start with <code>x-</code>)
+          <textarea id="ep-custom-headers" rows="3" placeholder='{"x-csod-authentication": "my-token"}'></textarea>
+        </label>
+
+        <div class="grid-2">
+          <label>PGP Private Key (ASCII-armored) <span id="ep-pgp-status" class="muted"></span>
+            <textarea id="ep-pgp-key" rows="5" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
+            <input type="file" id="ep-pgp-file" accept=".asc,.pgp,.txt">
+            <label class="checkbox-inline small-check" id="ep-clear-pgp-wrap" hidden>
+              <input type="checkbox" id="ep-clear-pgp"> Clear existing PGP private key
+            </label>
+          </label>
+          <div>
+            <label>PGP Passphrase <span id="ep-pgppass-status" class="muted"></span>
+              <input type="password" id="ep-pgp-pass" autocomplete="new-password" placeholder="Optional key passphrase">
+              <label class="checkbox-inline small-check" id="ep-clear-pgppass-wrap" hidden>
+                <input type="checkbox" id="ep-clear-pgppass"> Clear existing passphrase
+              </label>
+            </label>
+            <label>Event Retention Override (days, blank = global)
+              <input type="number" id="ep-ret-days" min="1" placeholder="Global default">
+            </label>
+            <label>Heartbeat Retention Override (days, blank = global)
+              <input type="number" id="ep-hb-days" min="1" placeholder="Global default">
+            </label>
+            <label class="checkbox-inline">
+              <input type="checkbox" id="ep-store-raw-err"> Acknowledge 200 OK even on decode error (disables CSOD retry)
+            </label>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" id="btn-cancel-endpoint" class="btn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Endpoint</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Settings Tab -->
+    <section id="tab-settings" class="panel" hidden>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Data Retention</h3>
+          <form id="settings-form">
+            <label>Regular Events Retention (days)
+              <input type="number" id="set-ret-days" min="1" required>
+            </label>
+            <label>Heartbeats &amp; Challenges Retention (days)
+              <input type="number" id="set-hb-days" min="1" required>
+            </label>
+            <p class="muted" id="set-interval-note"></p>
+            <div class="form-actions">
+              <button type="button" id="btn-purge-now" class="btn">Purge Expired Now</button>
+              <button type="submit" class="btn btn-primary">Save Settings</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h3>Database Status</h3>
+          <dl class="stats" id="stats-list"></dl>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Event Inspector Modal -->
+  <dialog id="event-modal">
+    <div class="modal-head">
+      <h3 id="modal-title">Event Detail</h3>
+      <button id="modal-close" class="btn btn-sm">Close</button>
+    </div>
+    <div id="modal-meta" class="meta-grid"></div>
+    <details>
+      <summary>Incoming HTTP Headers</summary>
+      <pre id="modal-headers"></pre>
+    </details>
+    <div class="modal-subhead">
+      <strong>Decoded JSON Payload</strong>
+      <button id="modal-copy-json" class="btn btn-sm">Copy JSON</button>
+    </div>
+    <pre id="modal-payload"></pre>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,7 +22,7 @@ type UserProfile struct {
 }
 
 // Client queries Autentico's Admin API to resolve opaque ForwardAuth user IDs
-// into readable names/usernames without manual entry in Observer.
+// into readable usernames without manual entry in Observer.
 type Client struct {
 	apiURL       string
 	clientID     string
@@ -56,6 +57,17 @@ func (c *Client) Enabled() bool {
 		return false
 	}
 	return c.staticToken != "" || (c.username != "" && c.password != "")
+}
+
+// Summary returns a non-secret status string for startup logging.
+func (c *Client) Summary() string {
+	if !c.Enabled() {
+		return "disabled"
+	}
+	if c.staticToken != "" {
+		return fmt.Sprintf("enabled (url=%s, auth=static_token)", c.apiURL)
+	}
+	return fmt.Sprintf("enabled (url=%s, client_id=%s, username=%s)", c.apiURL, c.clientID, c.username)
 }
 
 // LookupUser fetches a user's profile from GET /admin/api/users/{id}.
@@ -99,7 +111,8 @@ func (c *Client) fetchUser(ctx context.Context, token, userID string) (UserProfi
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return UserProfile{}, resp.StatusCode, fmt.Errorf("autentico user lookup returned HTTP %d", resp.StatusCode)
+		bodySnippet := readBodySnippet(resp.Body)
+		return UserProfile{}, resp.StatusCode, fmt.Errorf("GET %s returned HTTP %d: %s", endpoint, resp.StatusCode, bodySnippet)
 	}
 
 	var envelope struct {
@@ -148,44 +161,18 @@ func (c *Client) getToken(ctx context.Context, forceRefresh bool) (string, error
 		return c.token, nil
 	}
 
-	form := url.Values{
-		"grant_type": {"password"},
-		"username":   {c.username},
-		"password":   {c.password},
-		"scope":      {"openid profile email"},
+	tokResp, status, body, err := c.requestToken(ctx, false)
+	if err != nil && c.clientID != "" && c.clientSecret != "" && (status == http.StatusUnauthorized || status == http.StatusBadRequest) {
+		// Retry once with client_secret_post in case client uses form-post auth instead of Basic auth.
+		tokResp2, status2, body2, err2 := c.requestToken(ctx, true)
+		if err2 == nil {
+			tokResp, status, body, err = tokResp2, status2, body2, nil
+		} else {
+			return "", fmt.Errorf("token request failed (basic HTTP %d: %s; post HTTP %d: %s)", status, body, status2, body2)
+		}
 	}
-	if c.clientID != "" && c.clientSecret == "" {
-		form.Set("client_id", c.clientID)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL+"/oauth2/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if c.clientID != "" && c.clientSecret != "" {
-		req.SetBasicAuth(c.clientID, c.clientSecret)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("autentico token request failed with HTTP %d", resp.StatusCode)
-	}
-
-	var tokResp struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokResp); err != nil {
-		return "", fmt.Errorf("decode autentico token: %w", err)
-	}
-	if tokResp.AccessToken == "" {
-		return "", errors.New("autentico returned empty access_token")
 	}
 
 	ttl := time.Duration(tokResp.ExpiresIn) * time.Second
@@ -198,4 +185,61 @@ func (c *Client) getToken(ctx context.Context, forceRefresh bool) (string, error
 	c.token = tokResp.AccessToken
 	c.expiresAt = time.Now().Add(ttl)
 	return c.token, nil
+}
+
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"`
+}
+
+func (c *Client) requestToken(ctx context.Context, useSecretPost bool) (tokenResponse, int, string, error) {
+	form := url.Values{
+		"grant_type": {"password"},
+		"username":   {c.username},
+		"password":   {c.password},
+		"scope":      {"openid profile email"},
+	}
+	if c.clientID != "" {
+		if c.clientSecret == "" {
+			form.Set("client_id", c.clientID)
+		} else if useSecretPost {
+			form.Set("client_id", c.clientID)
+			form.Set("client_secret", c.clientSecret)
+		}
+	}
+
+	tokenURL := c.apiURL + "/oauth2/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return tokenResponse{}, 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if c.clientID != "" && c.clientSecret != "" && !useSecretPost {
+		req.SetBasicAuth(c.clientID, c.clientSecret)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return tokenResponse{}, 0, "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		snippet := readBodySnippet(resp.Body)
+		return tokenResponse{}, resp.StatusCode, snippet, fmt.Errorf("POST %s returned HTTP %d: %s", tokenURL, resp.StatusCode, snippet)
+	}
+
+	var tokResp tokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokResp); err != nil {
+		return tokenResponse{}, resp.StatusCode, "", fmt.Errorf("decode autentico token: %w", err)
+	}
+	if tokResp.AccessToken == "" {
+		return tokenResponse{}, resp.StatusCode, "", errors.New("autentico returned empty access_token")
+	}
+	return tokResp, resp.StatusCode, "", nil
+}
+
+func readBodySnippet(r io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(r, 512))
+	return strings.TrimSpace(string(b))
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -126,6 +127,7 @@ func (s *Server) resolveActor(r *http.Request) (string, string, string) {
 			_ = s.store.SyncUserFromAutentico(ctx, uid, resolvedEmail, prof.DisplayName)
 			return uid, resolvedEmail, prof.DisplayName
 		}
+		log.Printf("autentico user lookup failed for %s: %v", uid, lookupErr)
 	}
 
 	_ = s.store.UpsertUser(ctx, uid, email, hdrName)

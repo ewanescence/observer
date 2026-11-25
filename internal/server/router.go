@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"io/fs"
+	"log"
 	"net/http"
 
 	"github.com/elematte/observer/internal/autentico"
@@ -36,6 +37,7 @@ func New(cfg config.Config, store *db.Store, ret *retention.Worker) *Server {
 			cfg.AutenticoAdminToken,
 		),
 	}
+	log.Printf("autentico profile sync: %s", s.autenticoClient.Summary())
 
 	rootMux := http.NewServeMux()
 
